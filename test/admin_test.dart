@@ -72,6 +72,11 @@ Finder _iconButton(String label) =>
 
 Finder _field(String key) => find.descendant(of: find.byKey(ValueKey(key)), matching: find.byType(TextField));
 
+/// Text typed into the field with this key. (The same words can also appear in
+/// a preview, so a bare find.text would match more than one thing.)
+Finder _typedIn(String key, String text) =>
+    find.descendant(of: find.byKey(ValueKey(key)), matching: find.text(text));
+
 /// The confirm button of an open bottom sheet (its label is upper-cased).
 Finder _sheetButton(String label) =>
     find.descendant(of: find.byType(BottomSheet), matching: find.text(label.toUpperCase()));
@@ -168,9 +173,47 @@ void main() {
 
       await t.tap(find.text('Remove').first);
       await _settle(t);
-      await t.tap(find.widgetWithText(TextButton, 'Remove'));
+      // Removing asks why, and will not go ahead until a reason is chosen.
+      expect(find.text('REMOVE WISH'), findsOneWidget);
+      await t.tap(find.text('REMOVE WISH'));
       await _settle(t);
-      expect(rig.tools.calls.last, 'remove:w1');
+      expect(rig.tools.calls.where((c) => c.startsWith('remove')), isEmpty);
+      await t.tap(find.byKey(const ValueKey('reason-harassment')));
+      await t.pump();
+      await t.tap(find.text('REMOVE WISH'));
+      await _settle(t);
+      expect(rig.tools.calls.last, 'remove:w1:harassment');
+    });
+
+    testWidgets('a note typed with the reason goes along with it', (t) async {
+      final rig = await _open(t, const ModerationScreen());
+      rig.tools.wishes.add([ModWish(_wish('w1', 'Buy my stuff'), hidden: false, authorUid: 'abcdef123')]);
+      rig.tools.reports.add(const [WishReport(id: 'r1', wishId: 'w1', reason: 'Spam')]);
+      rig.tools.blocked.add(const []);
+      await _settle(t);
+      await t.tap(find.text('Remove'));
+      await _settle(t);
+      await t.tap(find.byKey(const ValueKey('reason-spam')));
+      await t.enterText(find.descendant(of: find.byKey(const ValueKey('reason-note')), matching: find.byType(TextField)), 'Same link five times');
+      await t.pump();
+      await t.tap(find.text('REMOVE WISH'));
+      await _settle(t);
+      expect(rig.tools.calls.last, 'remove:w1:spam:Same link five times');
+    });
+
+    testWidgets('backing out of the reason sheet removes nothing', (t) async {
+      final rig = await _open(t, const ModerationScreen());
+      rig.tools.wishes.add([ModWish(_wish('w1', 'A wish'), hidden: false)]);
+      rig.tools.reports.add(const [WishReport(id: 'r1', wishId: 'w1', reason: 'Spam')]);
+      rig.tools.blocked.add(const []);
+      await _settle(t);
+      await t.tap(find.text('Remove'));
+      await _settle(t);
+      await t.tap(find.byKey(const ValueKey('reason-spam')));
+      await t.pump();
+      await t.tap(find.text('Cancel'));
+      await _settle(t);
+      expect(rig.tools.calls, isEmpty);
     });
 
     testWidgets('an empty queue says the Well is calm', (t) async {
@@ -205,15 +248,17 @@ void main() {
 
       await t.tap(find.text('Block author'));
       await _settle(t);
-      await t.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await t.tap(find.text('Cancel'));
       await _settle(t);
       expect(rig.tools.calls, isEmpty);
 
       await t.tap(find.text('Block author'));
       await _settle(t);
-      await t.tap(find.widgetWithText(TextButton, 'Block'));
+      await t.tap(find.byKey(const ValueKey('reason-spam')));
+      await t.pump();
+      await t.tap(find.text('BLOCK PERSON'));
       await _settle(t);
-      expect(rig.tools.calls, ['block:abcdef123']);
+      expect(rig.tools.calls, ['block:abcdef123:spam']);
     });
 
     testWidgets('an already-blocked author is marked and cannot be blocked twice', (t) async {
@@ -265,7 +310,9 @@ void main() {
       expect(find.text('1,284'), findsOneWidget); // wishes in the Well
       expect(find.text('9,120'), findsOneWidget); // luck given
       expect(find.text('OPEN REPORTS'), findsOneWidget);
-      expect(find.textContaining('96 people'), findsOneWidget);
+      expect(find.text('96'), findsOneWidget); // people wishing in the period
+      expect(find.text('163'), findsOneWidget); // new wishes in the period
+      expect(find.text('LAST 14 DAYS'), findsOneWidget);
       expect(find.text('410'), findsWidgets); // career + devices
       expect(find.text('Career'), findsOneWidget);
     });
@@ -374,7 +421,7 @@ void main() {
       await t.tap(find.text('Cancel'));
       await _settle(t);
       expect(rig.tools.calls, isEmpty);
-      expect(find.text('Hello'), findsOneWidget); // still typed
+      expect(_typedIn('announce-title', 'Hello'), findsOneWidget); // still typed
     });
 
     testWidgets('a failure keeps what was typed', (t) async {
@@ -388,7 +435,7 @@ void main() {
       await t.tap(_sheetButton('Send'));
       await _settle(t);
       expect(find.textContaining('did not go through'), findsOneWidget);
-      expect(find.text('Hello'), findsOneWidget);
+      expect(_typedIn('announce-title', 'Hello'), findsOneWidget);
     });
 
     testWidgets('the history shows how each one went', (t) async {
@@ -473,7 +520,7 @@ void main() {
         child: MaterialApp(theme: MW.theme(), home: const ControlsScreen()),
       ));
       await t.pump();
-      expect(find.text('Live banner'), findsOneWidget);
+      expect(_typedIn('field-banner', 'Live banner'), findsOneWidget);
       expect(find.text('spam, scam'), findsOneWidget);
     });
   });
@@ -483,10 +530,15 @@ void main() {
       await _open(t, const AdminsScreen());
       await _settle(t);
       expect(find.text('boss@braidstribe.com'), findsOneWidget);
-      expect(find.text('Owner · You'), findsOneWidget);
-      expect(find.text('Admin'), findsOneWidget); // the helper
-      // Only the other admin gets a Remove link.
-      expect(find.text('Remove'), findsOneWidget);
+      expect(find.text('helper@braidstribe.com'), findsOneWidget);
+      expect(find.text('mod@braidstribe.com'), findsOneWidget);
+      expect(find.text('You'), findsOneWidget);
+      // Each admin carries their role (the legend below repeats each once more).
+      expect(find.text('OWNER'), findsNWidgets(2));
+      expect(find.text('ADMIN'), findsNWidgets(2));
+      expect(find.text('MODERATOR'), findsNWidgets(2));
+      // The two other admins can be removed; you cannot remove yourself.
+      expect(find.text('Remove'), findsNWidgets(2));
     });
 
     testWidgets('adds an admin by email, and the list shows them', (t) async {
@@ -496,7 +548,7 @@ void main() {
       await t.pump();
       await t.tap(find.text('ADD ADMIN'));
       await _settle(t);
-      expect(rig.tools.calls, ['add-admin:new@braidstribe.com']);
+      expect(rig.tools.calls, ['add-admin:new@braidstribe.com:admin']);
       expect(find.text('new@braidstribe.com'), findsOneWidget);
       expect(find.text('new@braidstribe.com is now an admin.'), findsOneWidget);
     });
@@ -523,19 +575,19 @@ void main() {
       await _settle(t);
       expect(find.textContaining('No account has that email'), findsOneWidget);
       expect(find.text('stranger@example.com'), findsOneWidget);
-      expect(rig.tools.admins.length, 2);
+      expect(rig.tools.admins.length, 3);
     });
 
     testWidgets('removing an admin asks first', (t) async {
       final rig = await _open(t, const AdminsScreen());
       await _settle(t);
-      await t.tap(find.text('Remove'));
+      await t.tap(find.text('Remove').first);
       await _settle(t);
       await t.tap(find.widgetWithText(TextButton, 'Cancel'));
       await _settle(t);
       expect(rig.tools.calls, isEmpty);
 
-      await t.tap(find.text('Remove'));
+      await t.tap(find.text('Remove').first);
       await _settle(t);
       await t.tap(find.widgetWithText(TextButton, 'Remove'));
       await _settle(t);
@@ -765,10 +817,10 @@ void main() {
     testWidgets('the app follows the admin record as it changes', (t) async {
       final rig = await _open(t, const AdminScreen());
       expect(rig.state.isAdmin, isTrue);
-      rig.backend.adminFeed.add(false);
+      rig.backend.adminFeed.add(null);
       await t.pump();
       expect(rig.state.isAdmin, isFalse);
-      rig.backend.adminFeed.add(true);
+      rig.backend.adminFeed.add(AdminRole.owner);
       await t.pump();
       expect(rig.state.isAdmin, isTrue);
     });
@@ -781,7 +833,7 @@ void main() {
       await _settle(t);
       expect(find.text('MODERATION'), findsOneWidget);
 
-      rig.backend.adminFeed.add(false);
+      rig.backend.adminFeed.add(null);
       await _settle(t);
       expect(find.text('MODERATION'), findsNothing);
       expect(find.text('Admin access has ended for this account.'), findsOneWidget);
@@ -793,7 +845,7 @@ void main() {
       await _settle(t);
       expect(find.byType(AdminScreen), findsOneWidget);
 
-      rig.backend.adminFeed.add(false);
+      rig.backend.adminFeed.add(null);
       await _settle(t);
       expect(find.byType(AdminScreen), findsNothing);
       expect(find.text('open dashboard'), findsOneWidget);

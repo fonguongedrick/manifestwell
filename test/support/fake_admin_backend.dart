@@ -18,8 +18,14 @@ class FakeAdminBackend implements AdminBackend {
   /// Make every action fail, as if the phone were offline.
   bool failActions = false;
 
+  /// The limits the screens asked for, in order, to check "load more".
+  final wishLimits = <int>[];
+  final logLimits = <int>[];
+
   OverviewStats? stats;
   Object? overviewError;
+  int? lastOverviewDays;
+  bool? lastIncludeReach;
   AppConfig? savedConfig;
   final exports = <AdminExport>[];
 
@@ -28,30 +34,47 @@ class FakeAdminBackend implements AdminBackend {
     calls.add(call);
   }
 
+  // ---- Moderation --------------------------------------------------------------
+
   @override
-  Stream<List<ModWish>> watchAllWishes() => wishes.stream;
+  Stream<List<ModWish>> watchAllWishes({int limit = 200}) {
+    wishLimits.add(limit);
+    return wishes.stream;
+  }
+
   @override
-  Stream<List<WishReport>> watchReports() => reports.stream;
+  Stream<List<WishReport>> watchReports({int limit = 200}) => reports.stream;
   @override
   Future<void> setHidden(String wishId, bool hidden) async => _act('hide:$wishId:$hidden');
   @override
-  Future<void> removeWish(String wishId) async => _act('remove:$wishId');
+  Future<void> setHiddenMany(List<String> wishIds, bool hidden) async =>
+      _act('${hidden ? 'hide' : 'restore'}-many:${wishIds.join('+')}');
+  @override
+  Future<void> removeWish(String wishId, {required ModerationReason reason, String note = ''}) async =>
+      _act('remove:$wishId:${reason.name}${note.isEmpty ? '' : ':$note'}');
+  @override
+  Future<void> removeWishes(List<String> wishIds, {required ModerationReason reason, String note = ''}) async =>
+      _act('remove-many:${wishIds.join('+')}:${reason.name}${note.isEmpty ? '' : ':$note'}');
   @override
   Future<void> dismissReports(String wishId, List<String> reportIds) async =>
       _act('dismiss:$wishId:${reportIds.join('+')}');
+  @override
+  Future<void> dismissReportsFor(List<String> wishIds) async => _act('dismiss-for:${wishIds.join('+')}');
 
   @override
   Stream<List<BlockedPerson>> watchBlocked() => blocked.stream;
   @override
-  Future<void> block(String uid, {String reason = ''}) async => _act('block:$uid');
+  Future<void> block(String uid, {required ModerationReason reason, String note = ''}) async =>
+      _act('block:$uid:${reason.name}${note.isEmpty ? '' : ':$note'}');
   @override
   Future<void> unblock(String uid) async => _act('unblock:$uid');
 
   // ---- Admins ----------------------------------------------------------------
 
   final admins = <AdminAccount>[
-    const AdminAccount(uid: 'owner-uid-1', email: 'boss@braidstribe.com', owner: true, you: true),
+    const AdminAccount(uid: 'owner-uid-1', email: 'boss@braidstribe.com', role: AdminRole.owner, you: true),
     const AdminAccount(uid: 'helper-uid-2', email: 'helper@braidstribe.com'),
+    const AdminAccount(uid: 'mod-uid-3', email: 'mod@braidstribe.com', role: AdminRole.moderator),
   ];
 
   /// Emails that have an account; anything else is "no account".
@@ -64,12 +87,21 @@ class FakeAdminBackend implements AdminBackend {
   }
 
   @override
-  Future<void> addAdmin(String email) async {
-    _act('add-admin:$email');
+  Future<void> addAdmin(String email, {AdminRole role = AdminRole.admin}) async {
+    _act('add-admin:$email:${role.id}');
     if (!knownEmails.contains(email)) {
       throw const AdminActionException('No account has that email. They need to sign in to the app first.');
     }
-    admins.add(AdminAccount(uid: 'uid-$email', email: email));
+    admins.add(AdminAccount(uid: 'uid-$email', email: email, role: role));
+  }
+
+  @override
+  Future<void> setAdminRole(String uid, AdminRole role) async {
+    final i = admins.indexWhere((a) => a.uid == uid);
+    if (admins[i].you) throw const AdminActionException('You cannot change your own role.');
+    _act('set-role:$uid:${role.id}');
+    final old = admins[i];
+    admins[i] = AdminAccount(uid: old.uid, email: old.email, role: role, you: old.you);
   }
 
   @override
@@ -133,11 +165,17 @@ class FakeAdminBackend implements AdminBackend {
     return next;
   }
 
+  // ---- Overview ----------------------------------------------------------------
+
   @override
-  Future<OverviewStats> loadOverview({DateTime? now, int days = 14}) async {
+  Future<OverviewStats> loadOverview({DateTime? now, int days = 14, bool includeReach = true}) async {
+    lastOverviewDays = days;
+    lastIncludeReach = includeReach;
     if (overviewError != null) throw overviewError!;
-    return stats ?? sampleStats();
+    return stats ?? sampleStats(days: days, includeReach: includeReach);
   }
+
+  // ---- Controls ----------------------------------------------------------------
 
   @override
   Future<void> saveConfig(AppConfig config) async {
@@ -145,14 +183,40 @@ class FakeAdminBackend implements AdminBackend {
     savedConfig = config;
   }
 
+  // ---- Announcements -------------------------------------------------------------
+
+  /// How many phones each audience would reach.
+  final reach = <Audience, int>{Audience.all: 410, Audience.android: 250, Audience.ios: 160};
+
+  /// How many of the admin's own phones have notifications on (0 = none).
+  int testPhones = 1;
+
   @override
   Stream<List<Announcement>> watchAnnouncements() => announcements.stream;
+
+  @override
+  Future<int> estimateReach(Audience audience) async => reach[audience] ?? 0;
+
+  @override
+  Future<int> sendTestAnnouncement({required String title, required String body}) async {
+    _act('announce-test:$title:$body');
+    if (testPhones == 0) {
+      throw const AdminActionException('This account has no phone with notifications on. Turn them on in Settings first.');
+    }
+    return testPhones;
+  }
+
   @override
   Future<void> sendAnnouncement({required String title, required String body, required Audience audience}) async =>
       _act('announce:${audience.id}:$title:$body');
 
+  // ---- Activity & export -----------------------------------------------------------
+
   @override
-  Stream<List<AdminLogEntry>> watchLog() => log.stream;
+  Stream<List<AdminLogEntry>> watchLog({int limit = 100}) {
+    logLimits.add(limit);
+    return log.stream;
+  }
 
   @override
   Future<String> exportCsv(AdminExport what) async {
@@ -161,18 +225,18 @@ class FakeAdminBackend implements AdminBackend {
   }
 }
 
-OverviewStats sampleStats({int days = 14}) => OverviewStats(
+OverviewStats sampleStats({int days = 14, bool includeReach = true}) => OverviewStats(
       wishes: 1284,
       hidden: 6,
       openReports: 3,
       luck: 9120,
       blocked: 2,
-      devices: 410,
-      androidDevices: 250,
-      iosDevices: 160,
-      luckAlertDevices: 380,
-      revisitDevices: 290,
-      plusMembers: 57,
+      devices: includeReach ? 410 : 0,
+      androidDevices: includeReach ? 250 : 0,
+      iosDevices: includeReach ? 160 : 0,
+      luckAlertDevices: includeReach ? 380 : 0,
+      revisitDevices: includeReach ? 290 : 0,
+      plusMembers: includeReach ? 57 : 0,
       byCategory: {
         WishCategory.career: 410,
         WishCategory.love: 380,
@@ -181,9 +245,14 @@ OverviewStats sampleStats({int days = 14}) => OverviewStats(
         WishCategory.home: 104,
       },
       daily: [
-        for (var i = 0; i < days; i++) DailyCount(DateTime(2026, 10, 28 + i), [4, 9, 6, 12, 8, 15, 11, 7, 14, 18, 9, 13, 21, 16][i % 14]),
+        for (var i = 0; i < days; i++)
+          DailyCount(DateTime(2026, 11, 1).add(Duration(days: i)), [4, 9, 6, 12, 8, 15, 11, 7, 14, 18, 9, 13, 21, 16][i % 14]),
       ],
       wishers: 96,
       windowLuck: 840,
       windowCapped: false,
+      // 163 wishes now against 130 before: up 25%.
+      previous: const PeriodTotals(wishes: 130, wishers: 80, luck: 900),
+      oldestOpenReport: DateTime.now().subtract(const Duration(hours: 30)),
+      includesReach: includeReach,
     );

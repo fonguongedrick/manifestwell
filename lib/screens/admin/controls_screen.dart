@@ -11,7 +11,7 @@ import '../../widgets/ui.dart';
 import 'admin_kit.dart';
 
 /// Switches and messages that change the live app for everyone, within seconds
-/// and without a new release.
+/// and without a new release. Leaving with unsaved changes asks first.
 class ControlsScreen extends StatefulWidget {
   const ControlsScreen({super.key});
 
@@ -81,9 +81,27 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
   }
 
+  Future<void> _confirmLeave() async {
+    final leave = await confirmDialog(
+      context,
+      title: 'Discard your changes?',
+      body: 'You changed some controls but have not saved them. If you leave now they are lost.',
+      confirm: 'Discard',
+    );
+    if (leave && mounted) Navigator.of(context).pop();
+  }
+
   @override
-  Widget build(BuildContext context) => AdminPage(
+  Widget build(BuildContext context) {
+    final changedAt = context.select<AppState, DateTime?>((s) => s.config.updatedAt);
+    return PopScope(
+      canPop: !_dirty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _confirmLeave();
+      },
+      child: AdminPage(
         title: 'Controls',
+        area: AdminArea.controls,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(MW.gutter, 0, MW.gutter, 40),
           children: [
@@ -120,6 +138,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
               maxLines: 4,
               maxLength: AppConfig.bannerMax,
             ),
+            const SizedBox(height: 10),
+            const Caps('How it looks in the app'),
+            const SizedBox(height: 8),
+            _BannerPreview(paused: _paused, banner: _banner.text.trim()),
             const SizedBox(height: 26),
             const SectionHeading('Blocked words'),
             const SizedBox(height: 6),
@@ -147,7 +169,67 @@ class _ControlsScreenState extends State<ControlsScreen> {
             ),
             const SizedBox(height: 22),
             GlowButton('Save changes', isLoading: _saving, onPressed: _dirty ? _save : null),
+            if (_dirty)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Center(
+                  child: Text('You have unsaved changes.', style: MW.ui(12.5, color: MW.goldBright, weight: 700)),
+                ),
+              ),
+            if (changedAt != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 14),
+                child: Center(
+                  child: Text('Last changed ${whenLabel(changedAt)}.',
+                      style: MW.ui(12, color: MW.textFaint, weight: 700)),
+                ),
+              ),
           ],
         ),
-      );
+      ),
+    );
+  }
+}
+
+/// The notice exactly as members see it at the top of the Well, so an admin
+/// can judge the wording before saving.
+class _BannerPreview extends StatelessWidget {
+  final bool paused;
+  final String banner;
+  const _BannerPreview({required this.paused, required this.banner});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!paused && banner.isEmpty) {
+      return Text('Nothing shows at the top of the Well.', style: MW.ui(13, color: MW.textFaint, height: 1.4));
+    }
+    final headline = paused ? 'New wishes are paused for a little while. You can still send luck.' : banner;
+    return Semantics(
+      container: true,
+      label: 'Preview: $headline${paused && banner.isNotEmpty ? '. $banner' : ''}',
+      excludeSemantics: true,
+      child: GlassCard(
+        radius: 20,
+        blur: 10,
+        borderColor: MW.gold.withValues(alpha: 0.5),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Glyph(GlyphKind.info, size: 18, color: MW.gold, stroke: 1.6),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(headline, style: MW.ui(14.5, color: MW.text, weight: 700, height: 1.4)),
+              if (paused && banner.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(banner, style: MW.ui(13.5, color: MW.textDim, height: 1.4)),
+              ],
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
 }

@@ -187,6 +187,117 @@ void main() {
     });
   });
 
+  group('AdminRole', () {
+    test('owners and admins may open every part of the dashboard', () {
+      for (final role in [AdminRole.owner, AdminRole.admin]) {
+        for (final area in AdminArea.values) {
+          expect(role.can(area), isTrue, reason: '${role.name} / ${area.name}');
+        }
+      }
+    });
+
+    test('a moderator may open exactly overview, moderation, people and activity', () {
+      const allowed = {AdminArea.overview, AdminArea.moderation, AdminArea.people, AdminArea.activity};
+      for (final area in AdminArea.values) {
+        expect(AdminRole.moderator.can(area), allowed.contains(area), reason: area.name);
+      }
+    });
+
+    test('only an owner manages owners', () {
+      expect(AdminRole.owner.managesOwners, isTrue);
+      expect(AdminRole.admin.managesOwners, isFalse);
+      expect(AdminRole.moderator.managesOwners, isFalse);
+    });
+
+    test('the role on a document wins; with none, console = owner and app-made = admin', () {
+      expect(AdminRole.fromDoc({'role': 'moderator', 'addedBy': 'x'}), AdminRole.moderator);
+      expect(AdminRole.fromDoc({'role': 'owner'}), AdminRole.owner);
+      expect(AdminRole.fromDoc({}), AdminRole.owner);
+      expect(AdminRole.fromDoc(null), AdminRole.owner);
+      expect(AdminRole.fromDoc({'addedBy': 'someone'}), AdminRole.admin);
+      // Junk never promotes: an unknown role falls back as if there were none.
+      expect(AdminRole.fromDoc({'role': 'god', 'addedBy': 'x'}), AdminRole.admin);
+    });
+
+    test('the dart rule matches the server rule for every kind of document', () {
+      // functions/src/logic.js roleOfAdminDoc and firestore.rules adminRole()
+      // must give the same answer as AdminRole.fromDoc for the same data.
+      final cases = <Map<String, dynamic>?, AdminRole>{
+        {'role': 'moderator', 'addedBy': 'x'}: AdminRole.moderator,
+        {'role': 'admin'}: AdminRole.admin,
+        {}: AdminRole.owner,
+        {'addedBy': 'x'}: AdminRole.admin,
+        {'email': 'only@email.com'}: AdminRole.owner,
+      };
+      cases.forEach((doc, role) => expect(AdminRole.fromDoc(doc), role, reason: '$doc'));
+    });
+
+    test('an admin account counts as an owner only when it is one', () {
+      expect(const AdminAccount(uid: 'u', email: 'a@b.c', role: AdminRole.owner).owner, isTrue);
+      expect(const AdminAccount(uid: 'u', email: 'a@b.c').owner, isFalse);
+      expect(const AdminAccount(uid: 'u', email: 'a@b.c', role: AdminRole.moderator).owner, isFalse);
+    });
+  });
+
+  group('ActivityGroup', () {
+    test('every action the server and app write belongs to a group', () {
+      for (final action in [
+        'hide', 'restore', 'remove', 'dismiss', 'auto-hide', 'block', 'unblock', 'announce', 'announce-test',
+        'grant', 'revoke', 'admin-add', 'admin-remove', 'admin-role', 'settings',
+      ]) {
+        expect(ActivityGroup.of(action), isNotNull, reason: action);
+      }
+    });
+
+    test('an action nobody has heard of has no group, rather than a wrong one', () {
+      expect(ActivityGroup.of('something-new'), isNull);
+    });
+
+    test('actions are not claimed by two groups', () {
+      final seen = <String>{};
+      for (final g in ActivityGroup.values) {
+        for (final a in g.actions) {
+          expect(seen.add(a), isTrue, reason: '$a is in more than one group');
+        }
+      }
+    });
+  });
+
+  group('Trends and settings', () {
+    test('a trend is the change as a share of the period before', () {
+      expect(trendOf(125, 100), closeTo(0.25, 1e-9));
+      expect(trendOf(50, 100), closeTo(-0.5, 1e-9));
+      expect(trendOf(100, 100), 0);
+    });
+
+    test('there is no trend from nothing: a percentage of zero means nothing', () {
+      expect(trendOf(10, 0), isNull);
+      expect(trendOf(0, 0), isNull);
+      expect(trendOf(5, -1), isNull);
+    });
+
+    test('when settings were last saved never makes them look changed', () {
+      final a = AppConfig(banner: 'x', updatedAt: DateTime(2026, 1, 1), updatedBy: 'u1');
+      final b = AppConfig(banner: 'x', updatedAt: DateTime(2026, 6, 1), updatedBy: 'u2');
+      expect(a, b);
+      expect(a.copyWith(banner: 'y'), isNot(a));
+    });
+
+    test('settings remember who and when they came from', () {
+      final c = AppConfig.fromMap({'banner': 'x', 'updatedAt': DateTime(2026, 3, 4), 'updatedBy': 'u1'});
+      expect(c.updatedAt, DateTime(2026, 3, 4));
+      expect(c.updatedBy, 'u1');
+      expect(AppConfig.fromMap({'updatedAt': 'not a date'}).updatedAt, isNull);
+    });
+
+    test('every reason has words an admin can read', () {
+      for (final r in ModerationReason.values) {
+        expect(r.label.trim(), isNotEmpty);
+      }
+      expect(ModerationReason.values.map((r) => r.name).toSet().length, ModerationReason.values.length);
+    });
+  });
+
   group('Moderation with the admin list', () {
     test('blocks a whole word, any case', () {
       expect(Moderation.check('Great SPAM here', extraBlocked: ['spam']), isNotNull);

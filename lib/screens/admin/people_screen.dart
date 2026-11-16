@@ -41,6 +41,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
   @override
   Widget build(BuildContext context) => AdminPage(
         title: 'People',
+        area: AdminArea.people,
         child: LiveView<List<BlockedPerson>>(
           stream: _blocked,
           builder: (context, people) => ListView(

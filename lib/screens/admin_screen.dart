@@ -6,6 +6,7 @@ import 'package:intl/intl.dart' show DateFormat;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../models/admin.dart';
 import '../models/moderation.dart';
 import '../state/admin_backend.dart';
 import '../state/app_state.dart';
@@ -134,7 +135,9 @@ class _AdminScreenState extends State<AdminScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final account = context.watch<AppState>().accountLabel;
+    final state = context.watch<AppState>();
+    final account = state.accountLabel;
+    bool can(AdminArea area) => state.canAdmin(area);
     return AdminPage(
       title: 'Admin',
       root: true,
@@ -147,7 +150,14 @@ class _AdminScreenState extends State<AdminScreen> {
                 if (account != null)
                   Padding(
                     padding: const EdgeInsets.only(left: 6, bottom: 16),
-                    child: Text('Signed in as $account', style: MW.ui(13.5, color: MW.textDim, weight: 600)),
+                    child: Row(children: [
+                      Flexible(
+                        child: Text('Signed in as $account',
+                            overflow: TextOverflow.ellipsis, style: MW.ui(13.5, color: MW.textDim, weight: 600)),
+                      ),
+                      const SizedBox(width: 10),
+                      RolePill(state.adminRole),
+                    ]),
                   ),
                 StreamBuilder<List<WishReport>>(
                   stream: _reports,
@@ -163,14 +173,14 @@ class _AdminScreenState extends State<AdminScreen> {
                         mainAxisExtent: 148,
                       ),
                       children: [
-                        ModuleCard(
+                        if (can(AdminArea.overview)) ModuleCard(
                           glyph: GlyphKind.constellation,
                           title: 'Overview',
                           subtitle: 'Wishes, luck and reach',
                           tint: MW.sky,
                           onTap: () => _open(const OverviewScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.moderation)) ModuleCard(
                           glyph: GlyphKind.shield,
                           title: 'Moderation',
                           subtitle: waiting > 0 ? 'Reports waiting for you' : 'Reports and every wish',
@@ -178,42 +188,42 @@ class _AdminScreenState extends State<AdminScreen> {
                           badge: waiting,
                           onTap: () => _open(const ModerationScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.people)) ModuleCard(
                           glyph: GlyphKind.user,
                           title: 'People',
                           subtitle: 'Blocked from sharing',
                           tint: MW.lilac,
                           onTap: () => _open(const PeopleScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.announcements)) ModuleCard(
                           glyph: GlyphKind.bell,
                           title: 'Announcements',
                           subtitle: 'Notify every phone',
                           tint: MW.violet,
                           onTap: () => _open(const AnnouncementsScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.subscriptions)) ModuleCard(
                           glyph: GlyphKind.starPlus,
                           title: 'Subscriptions',
                           subtitle: 'See and give Plus',
                           tint: MW.gold,
                           onTap: () => _open(const SubscriptionsScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.admins)) ModuleCard(
                           glyph: GlyphKind.lock,
                           title: 'Admins',
                           subtitle: 'Who can open this',
                           tint: MW.violet,
                           onTap: () => _open(const AdminsScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.controls)) ModuleCard(
                           glyph: GlyphKind.sliders,
                           title: 'Controls',
                           subtitle: 'Pause, banner, words',
                           tint: MW.water,
                           onTap: () => _open(const ControlsScreen()),
                         ),
-                        ModuleCard(
+                        if (can(AdminArea.activity)) ModuleCard(
                           glyph: GlyphKind.document,
                           title: 'Activity',
                           subtitle: 'Who did what',
@@ -224,6 +234,7 @@ class _AdminScreenState extends State<AdminScreen> {
                     );
                   },
                 ),
+                if (can(AdminArea.export)) ...[
                 const SizedBox(height: 22),
                 SettingsSection(
                   footer: 'Opens as a spreadsheet file you can share or save.',
@@ -237,6 +248,7 @@ class _AdminScreenState extends State<AdminScreen> {
                     ),
                   ],
                 ),
+                ],
               ],
             ),
     );

@@ -17,13 +17,21 @@ firebase deploy --only functions:manifestwell --project braidstribeapp
 ```
 
 - [ ] Rules deployed (includes `devices`, `pushState`, `userPush` and the admin
-      dashboard's `config`, `blocked`, `announcements` and `adminLog`).
-      **Redeploy after pulling this update**: the dashboard needs the new rules.
+      dashboard's `config`, `blocked`, `announcements` and `adminLog`, and the
+      **role checks** that stop a moderator reading announcements, phones,
+      subscriptions or the admin list). **Redeploy after pulling this update**:
+      without the new rules a moderator is only hidden from those pages in the
+      app, not refused by the server.
+- [ ] Try the rules before relying on them (Firebase console > Firestore >
+      Rules > Rules Playground, or the emulator): as a `moderator` document,
+      reading `announcements/x` or `subscriptions/x` must be denied, and
+      updating `wishes/x` `hidden` must be allowed. They were written without
+      an emulator on hand, so this check is yours to run.
 - [ ] Functions deployed: `onLuckReceived`, `revisitNudges`, `onWishCreated`
       (auto-hides wishes with a blocked word), `onAnnouncementCreated` (sends
       dashboard announcements), and the admin tools `mwAdminList`,
-      `mwAdminAdd`, `mwAdminRemove`, `mwSubLookup`, `mwSubGrant`,
-      `mwSubRevoke` and `mwRevenueCatWebhook`. The first deploy may ask to
+      `mwAdminAdd`, `mwAdminSetRole`, `mwAdminRemove`, `mwSubLookup`,
+      `mwSubGrant`, `mwSubRevoke`, `mwAnnounceTest` and `mwRevenueCatWebhook`. The first deploy may ask to
       enable the Cloud Scheduler and Eventarc APIs; accept. No keys or secrets
       are needed for any of them.
 - [ ] Run `flutter pub get`: the app now depends on `cloud_functions`.
@@ -45,22 +53,45 @@ with the admin email and password. Once signed in, Settings shows an
 
 | Module | What it does |
 | --- | --- |
-| Overview | Wishes, luck, reports, 14-day chart, categories, push reach |
-| Moderation | Reports and every wish: hide, restore, remove, dismiss, block author |
+| Overview | What is waiting (and how long the oldest report has waited), 7/14/30/90-day ranges with trend arrows against the period before, chart, categories, push reach |
+| Moderation | Reports and every wish: search, sort, select several for bulk hide / restore / remove / dismiss, undo a hide, see each report, block an author. Removing or blocking asks why, and the reason goes in the activity log |
 | People | Blocked people, unblock |
-| Announcements | Push to everyone, Android only or iPhone only, with delivery results |
-| Controls | Pause new wishes, a banner on the Well, blocked words |
-| Activity | Append-only log of every admin action (nobody can edit or delete it) |
+| Announcements | Live preview, reach estimate, a test to your own phone, push to everyone / Android / iPhone, delivery results, and a one-minute lock after sending |
+| Controls | Pause new wishes, a banner on the Well (with a preview), blocked words; asks before you leave with unsaved changes; shows when it was last changed |
+| Activity | Append-only log of every admin action, with the reason given. Filter by kind, search, load older |
 | Export data | Wishes, reports or the activity log as CSV |
 | Subscriptions | Find a person by email, give Plus (1 week to lifetime) or take back Plus you gave, list of members |
-| Admins | Add an admin by email, remove admins, see who is an owner |
+| Admins | Add an admin by email with a role, change roles (owners), remove admins |
+
+### Roles
+
+What each person may do is decided by the server (security rules and the
+functions), not only hidden in the app.
+
+| Role | May |
+| --- | --- |
+| **Owner** | Everything, including adding, changing and removing owners |
+| **Admin** | Everything except managing owners |
+| **Moderator** | Overview, moderation, people (blocking) and the activity log. Not announcements, controls, subscriptions, export or other admins |
+
+- An admin document with **no `role`** is an **owner** if you created it in the
+  console (no `addedBy`) and an **admin** if the app created it. So everyone
+  who was an admin before roles existed keeps working, with the same power.
+- To give a role from the console, add a string field `role` = `owner`,
+  `admin` or `moderator` to `admins/<uid>`.
+- A role change reaches a signed-in phone within seconds. Removing an admin
+  closes their open dashboard pages straight away.
+- Nobody can change or remove themselves, there is always at least one owner,
+  and only an owner can change roles or remove an owner.
+- Every removal and block asks for a reason (harassment, spam, personal
+  information, self-harm concern, other, plus an optional note). It is written
+  to the activity log with who did it.
 
 ### Admins: how it works
 
 - **Owners** are admins you create in the Firebase console (a document at
   `admins/<uid>`). **Admins** added from the dashboard are recorded with who
-  added them. Any admin can add another. Nobody can remove themselves, the last
-  admin can't be removed, and only an owner can remove an owner.
+  added them and the role chosen.
 - The person you add must already have a Firebase account (they have signed in
   to the app with Google, Apple or email). Adding is by email and runs on the
   server (`mwAdminAdd`), because an app can't look other people up.

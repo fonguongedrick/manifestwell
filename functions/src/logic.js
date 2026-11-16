@@ -246,6 +246,65 @@ function whyCannotRemoveAdmin(p) {
   return null;
 }
 
+const ROLES = ["owner", "admin", "moderator"];
+
+/**
+ * The role an admins/{uid} document grants. Matches firestore.rules and the
+ * app: no role means owner if made in the console (no addedBy), else admin.
+ * @param {?object} data The admin document's fields.
+ * @return {string} "owner", "admin" or "moderator".
+ */
+function roleOfAdminDoc(data) {
+  const d = data || {};
+  if (ROLES.includes(d.role)) return d.role;
+  return d.addedBy ? "admin" : "owner";
+}
+
+/**
+ * @param {*} raw A role from the client.
+ * @return {?string} A valid role, or null.
+ */
+function normalizeRole(raw) {
+  const r = String(raw || "").trim().toLowerCase();
+  return ROLES.includes(r) ? r : null;
+}
+
+/**
+ * Whether a role may do the kind of thing only owners and admins can.
+ * @param {string} role The caller's role.
+ * @return {boolean} False for a moderator.
+ */
+function isFullRole(role) {
+  return role === "owner" || role === "admin";
+}
+
+/**
+ * Who may grant which role when adding an admin.
+ * @param {string} callerRole The caller's role.
+ * @param {string} newRole The role being given.
+ * @return {?string} Why not, or null if allowed.
+ */
+function whyCannotAddWithRole(callerRole, newRole) {
+  if (!isFullRole(callerRole)) return "Only owners and admins can add admins.";
+  if (newRole === "owner" && callerRole !== "owner") return "Only an owner can make someone an owner.";
+  return null;
+}
+
+/**
+ * Who may change someone's role.
+ * @param {{callerUid: string, targetUid: string, callerRole: string,
+ *     targetRole: string, newRole: string, ownerCount: number}} p The change.
+ * @return {?string} Why not, or null if allowed.
+ */
+function whyCannotSetRole(p) {
+  if (p.callerRole !== "owner") return "Only an owner can change roles.";
+  if (p.callerUid === p.targetUid) return "You cannot change your own role.";
+  if (p.targetRole === "owner" && p.newRole !== "owner" && p.ownerCount <= 1) {
+    return "There must always be at least one owner.";
+  }
+  return null;
+}
+
 // ---- Subscriptions (RevenueCat) -----------------------------------------------
 
 /** How long an admin can grant Plus for. "lifetime" never expires. */
@@ -342,6 +401,12 @@ function safeEqual(a, b) {
 }
 
 module.exports = {
+  ROLES,
+  roleOfAdminDoc,
+  normalizeRole,
+  isFullRole,
+  whyCannotAddWithRole,
+  whyCannotSetRole,
   normalizeEmail,
   whyCannotRemoveAdmin,
   GRANT_DAYS,

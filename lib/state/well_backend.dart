@@ -87,17 +87,18 @@ abstract class WellBackend {
 
   // ---- Admin ----------------------------------------------------------------
 
-  /// Whether the current Firebase user is a BraidsTribe/ManifestWell admin.
-  Future<bool> checkAdmin();
+  /// The signed-in account's admin role, or null if it is not an admin.
+  Future<AdminRole?> adminRole();
 
   /// Signs in with email and password. Returns false (and goes back to an
   /// anonymous session) when the account isn't an admin.
   Future<bool> signInAdmin(String email, String password);
 
-  /// Whether the signed-in account is an admin, kept live: it flips to false
-  /// the moment the admin record is removed, so a removed admin loses the
-  /// dashboard while the app is open, not at the next launch. False for a guest.
-  Stream<bool> watchAdmin();
+  /// The signed-in account's admin role, kept live: null the moment the admin
+  /// record is removed (so a removed admin loses the dashboard while the app is
+  /// open, not at the next launch) and a new value if their role is changed.
+  /// Null for a guest.
+  Stream<AdminRole?> watchAdmin();
 
   /// The dashboard's tools (moderation, people, announcements, settings).
   /// Null in local-only mode. Only an admin's account can use them; the
@@ -204,21 +205,21 @@ class FirestoreWellBackend implements WellBackend {
   // ---- Admin ----------------------------------------------------------------
 
   @override
-  Future<bool> checkAdmin() async {
+  Future<AdminRole?> adminRole() async {
     final user = _auth.currentUser;
-    if (user == null || user.isAnonymous) return false;
+    if (user == null || user.isAnonymous) return null;
     try {
       final doc = await _db.collection('admins').doc(user.uid).get();
-      return doc.exists;
+      return doc.exists ? AdminRole.fromDoc(doc.data()) : null;
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
   @override
   Future<bool> signInAdmin(String email, String password) async {
     await _auth.signInWithEmailAndPassword(email: email.trim(), password: password);
-    if (await checkAdmin()) return true;
+    if (await adminRole() != null) return true;
     // A valid account that isn't an admin gets no foothold here.
     await signOut();
     return false;
@@ -450,10 +451,10 @@ class FirestoreWellBackend implements WellBackend {
       );
 
   @override
-  Stream<bool> watchAdmin() {
+  Stream<AdminRole?> watchAdmin() {
     final user = _auth.currentUser;
-    if (user == null || user.isAnonymous) return Stream.value(false);
-    return _db.collection('admins').doc(user.uid).snapshots().map((s) => s.exists);
+    if (user == null || user.isAnonymous) return Stream.value(null);
+    return _db.collection('admins').doc(user.uid).snapshots().map((s) => s.exists ? AdminRole.fromDoc(s.data()) : null);
   }
 
   @override
@@ -471,5 +472,9 @@ class FirestoreWellBackend implements WellBackend {
 
   @override
   Stream<AppConfig> watchConfig() =>
-      _db.collection('config').doc('app').snapshots().map((s) => AppConfig.fromMap(s.data()));
+      _db.collection('config').doc('app').snapshots().map((s) {
+        final d = s.data();
+        // Firestore stores a Timestamp; the model wants a plain DateTime.
+        return AppConfig.fromMap(d == null ? null : {...d, 'updatedAt': dateOf(d['updatedAt'])});
+      });
 }

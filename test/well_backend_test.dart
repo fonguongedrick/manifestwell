@@ -30,6 +30,7 @@ class _FakeBackend implements WellBackend {
   final saves = <String>[];
   final myLuck = StreamController<Map<String, int>>.broadcast();
   var admin = false;
+  var role = AdminRole.owner;
 
   var deleteAnswer = true;
   var failSaves = false;
@@ -68,7 +69,7 @@ class _FakeBackend implements WellBackend {
   @override
   Future<void> report(String wishId, String reason) async => reports.add(wishId);
   @override
-  Future<bool> checkAdmin() async => admin;
+  Future<AdminRole?> adminRole() async => admin ? role : null;
   @override
   Future<bool> signInAdmin(String email, String password) async => admin = password == 'right';
   @override
@@ -90,9 +91,9 @@ class _FakeBackend implements WellBackend {
   Future<bool> signInWithApple() async => false;
   @override
   AdminBackend? get adminTools => null;
-  final adminFeed = StreamController<bool>.broadcast();
+  final adminFeed = StreamController<AdminRole?>.broadcast();
   @override
-  Stream<bool> watchAdmin() => adminFeed.stream;
+  Stream<AdminRole?> watchAdmin() => adminFeed.stream;
   final grantFeed = StreamController<PlusGrant?>.broadcast();
   @override
   Stream<PlusGrant?> watchPlusGrant() => grantFeed.stream;

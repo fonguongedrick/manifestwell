@@ -90,6 +90,7 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   @override
   Widget build(BuildContext context) => AdminPage(
         title: 'Subscriptions',
+        area: AdminArea.subscriptions,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(MW.gutter, 0, MW.gutter, 40),
           children: [
@@ -131,7 +132,7 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                 }
                 final now = DateTime.now();
                 final active = people.where((p) => p.hasPlus(now)).length;
-                return Column(children: [
+                return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                   MetricGrid(tiles: [
                     MetricTile(label: 'With Plus now', value: active),
                     MetricTile(label: 'Lapsed', value: people.length - active, color: MW.lilac),

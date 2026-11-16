@@ -13,6 +13,9 @@ class FakeWellBackend implements WellBackend {
 
   String? account;
   bool admin = false;
+
+  /// The role an admin account has. Owner unless a test says otherwise.
+  AdminRole role = AdminRole.owner;
   bool deleteAnswer = true;
   final cloud = <String, Wish>{};
 
@@ -75,7 +78,7 @@ class FakeWellBackend implements WellBackend {
   }
 
   @override
-  Future<bool> checkAdmin() async => admin;
+  Future<AdminRole?> adminRole() async => admin ? role : null;
   @override
   Future<bool> signInAdmin(String email, String password) async => admin;
   /// What the dashboard talks to. Tests that open admin screens use this.
@@ -83,9 +86,9 @@ class FakeWellBackend implements WellBackend {
   @override
   AdminBackend? get adminTools => tools;
   /// Pushes a change in the account's admin status, as the live record would.
-  final adminFeed = StreamController<bool>.broadcast();
+  final adminFeed = StreamController<AdminRole?>.broadcast();
   @override
-  Stream<bool> watchAdmin() => adminFeed.stream;
+  Stream<AdminRole?> watchAdmin() => adminFeed.stream;
   final grantFeed = StreamController<PlusGrant?>.broadcast();
   @override
   Stream<PlusGrant?> watchPlusGrant() => grantFeed.stream;

@@ -16,7 +16,18 @@ class AppConfig {
   /// Words and phrases that keep a wish out of the Well.
   final List<String> blockedTerms;
 
-  const AppConfig({this.wishingPaused = false, this.banner = '', this.blockedTerms = const []});
+  /// When and by whom these were last saved. For display only: not part of
+  /// equality, so it never makes the Controls page think something changed.
+  final DateTime? updatedAt;
+  final String? updatedBy;
+
+  const AppConfig({
+    this.wishingPaused = false,
+    this.banner = '',
+    this.blockedTerms = const [],
+    this.updatedAt,
+    this.updatedBy,
+  });
 
   static const defaults = AppConfig();
 
@@ -24,6 +35,8 @@ class AppConfig {
         wishingPaused: wishingPaused ?? this.wishingPaused,
         banner: banner ?? this.banner,
         blockedTerms: blockedTerms ?? this.blockedTerms,
+        updatedAt: updatedAt,
+        updatedBy: updatedBy,
       );
 
   /// Tolerant of a missing or half-written document: anything unreadable falls
@@ -35,6 +48,8 @@ class AppConfig {
       wishingPaused: m['wishingPaused'] == true,
       banner: m['banner'] is String ? (m['banner'] as String).trim() : '',
       blockedTerms: terms is List ? [for (final t in terms) if (t is String && t.trim().isNotEmpty) t.trim()] : const [],
+      updatedAt: m['updatedAt'] is DateTime ? m['updatedAt'] as DateTime : null,
+      updatedBy: m['updatedBy'] is String ? m['updatedBy'] as String : null,
     );
   }
 
@@ -130,20 +145,104 @@ class AdminLogEntry {
   const AdminLogEntry({required this.id, required this.action, required this.detail, required this.by, this.at});
 }
 
+/// The parts of the dashboard. A role may or may not be allowed into each.
+enum AdminArea { overview, moderation, people, announcements, subscriptions, controls, admins, activity, export }
+
+/// What an admin may do. The server enforces this (security rules and the
+/// functions); the app only uses it to hide what would be refused anyway.
+///
+/// - **Owner**: everything, including adding, removing and changing owners.
+///   An admin created in the Firebase console, with no role, is an owner.
+/// - **Admin**: everything except managing owners.
+/// - **Moderator**: reviews wishes and reports and blocks people. Cannot send
+///   announcements, change the app's controls, touch subscriptions, export
+///   data or manage other admins.
+enum AdminRole {
+  owner('Owner', 'Everything, including other owners'),
+  admin('Admin', 'Everything except managing owners'),
+  moderator('Moderator', 'Reviews wishes and reports, blocks people');
+
+  final String label;
+  final String summary;
+  const AdminRole(this.label, this.summary);
+
+  String get id => name;
+
+  /// The role stored on an admins/{uid} document. A document with no role is
+  /// an owner if it was created in the console (no addedBy), and an admin if
+  /// the app created it, which is how every admin added before roles existed
+  /// was recorded.
+  static AdminRole fromDoc(Map<String, dynamic>? data) {
+    final role = data?['role'];
+    for (final r in values) {
+      if (r.name == role) return r;
+    }
+    return data?['addedBy'] == null ? owner : admin;
+  }
+
+  bool can(AdminArea area) => switch (this) {
+        owner || admin => true,
+        moderator => const {
+            AdminArea.overview,
+            AdminArea.moderation,
+            AdminArea.people,
+            AdminArea.activity,
+          }.contains(area),
+      };
+
+  /// Whether this role may add, remove or change owners.
+  bool get managesOwners => this == owner;
+}
+
 /// An admin as the Admins page lists them.
 class AdminAccount {
   final String uid;
   final String email;
-
-  /// Created in the Firebase console. Only another owner can remove them.
-  final bool owner;
+  final AdminRole role;
 
   /// The person looking at the list.
   final bool you;
-  const AdminAccount({required this.uid, required this.email, this.owner = false, this.you = false});
+  const AdminAccount({required this.uid, required this.email, this.role = AdminRole.admin, this.you = false});
+
+  /// Created in the Firebase console. Only another owner can remove them.
+  bool get owner => role == AdminRole.owner;
 
   /// What to show when the account has no email.
   String get label => email.isNotEmpty ? email : 'Admin ${uid.substring(0, uid.length < 6 ? uid.length : 6)}';
+}
+
+/// The reasons an admin picks from when removing or blocking. A reason goes
+/// into the audit log so that every destructive action can be explained later.
+enum ModerationReason {
+  harassment('Harassment or unkindness'),
+  spam('Spam or links'),
+  personalInfo('Personal information'),
+  selfHarm('Self-harm concern'),
+  other('Something else');
+
+  final String label;
+  const ModerationReason(this.label);
+}
+
+/// Groups the audit log's actions, for filtering it.
+enum ActivityGroup {
+  moderation('Moderation', {'hide', 'restore', 'remove', 'dismiss', 'auto-hide', 'bulk'}),
+  people('People', {'block', 'unblock'}),
+  announcements('Announcements', {'announce', 'announce-test'}),
+  subscriptions('Plus', {'grant', 'revoke'}),
+  admins('Admins', {'admin-add', 'admin-remove', 'admin-role'}),
+  settings('Controls', {'settings'});
+
+  final String label;
+  final Set<String> actions;
+  const ActivityGroup(this.label, this.actions);
+
+  static ActivityGroup? of(String action) {
+    for (final g in values) {
+      if (g.actions.contains(action)) return g;
+    }
+    return null;
+  }
 }
 
 /// How long an admin can give Plus for. [id] is what the server expects.
@@ -301,6 +400,19 @@ class DailyCount {
   const DailyCount(this.day, this.count);
 }
 
+/// Wishes, people and luck over one period.
+class PeriodTotals {
+  final int wishes;
+  final int wishers;
+  final int luck;
+  const PeriodTotals({required this.wishes, required this.wishers, required this.luck});
+}
+
+/// How a figure changed against the period before: "up 12%", "down 3%".
+/// Null when there is nothing sensible to say (no earlier figure, or it was
+/// zero, where a percentage means nothing).
+double? trendOf(int now, int before) => before <= 0 ? null : (now - before) / before;
+
 /// Everything the Overview screen shows, gathered in one go.
 class OverviewStats {
   final int wishes;
@@ -331,6 +443,19 @@ class OverviewStats {
   /// from it are a floor, not a total.
   final bool windowCapped;
 
+  /// The same three figures for the period just before the window, for the
+  /// trend arrows. Null when the window was too busy to read both in full, so
+  /// a trend is never shown from partial data.
+  final PeriodTotals? previous;
+
+  /// When the oldest still-open report was filed: how long someone has been
+  /// waiting for a moderator.
+  final DateTime? oldestOpenReport;
+
+  /// False when the figures about phones and Plus were not loaded because the
+  /// role (a moderator) is not allowed to see them.
+  final bool includesReach;
+
   const OverviewStats({
     required this.wishes,
     required this.hidden,
@@ -348,6 +473,9 @@ class OverviewStats {
     required this.wishers,
     required this.windowLuck,
     required this.windowCapped,
+    this.previous,
+    this.oldestOpenReport,
+    this.includesReach = true,
   });
 
   int get windowWishes => daily.fold(0, (a, d) => a + d.count);

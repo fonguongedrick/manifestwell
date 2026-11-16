@@ -26,27 +26,39 @@ enum AdminExport {
 abstract class AdminBackend {
   // ---- Moderation ----------------------------------------------------------
 
-  /// Every wish, hidden ones included, newest first.
-  Stream<List<ModWish>> watchAllWishes();
+  /// Every wish, hidden ones included, newest first. [limit] is how many to
+  /// read: it grows when an admin asks to load more.
+  Stream<List<ModWish>> watchAllWishes({int limit = 200});
 
   /// Open reports, newest first.
-  Stream<List<WishReport>> watchReports();
+  Stream<List<WishReport>> watchReports({int limit = 200});
 
   Future<void> setHidden(String wishId, bool hidden);
 
-  /// Removes a wish for good and clears the reports against it.
-  Future<void> removeWish(String wishId);
+  /// Hides or restores several wishes at once, as one entry in the audit log.
+  Future<void> setHiddenMany(List<String> wishIds, bool hidden);
+
+  /// Removes a wish for good and clears the reports against it. A reason is
+  /// required, and goes into the audit log, so every removal can be explained.
+  Future<void> removeWish(String wishId, {required ModerationReason reason, String note = ''});
+
+  /// [removeWish] for several wishes at once, as one entry in the audit log.
+  Future<void> removeWishes(List<String> wishIds, {required ModerationReason reason, String note = ''});
 
   /// Clears reports without touching the wish (it was fine).
   Future<void> dismissReports(String wishId, List<String> reportIds);
+
+  /// Clears every report on each of these wishes.
+  Future<void> dismissReportsFor(List<String> wishIds);
 
   // ---- People ---------------------------------------------------------------
 
   Stream<List<BlockedPerson>> watchBlocked();
 
   /// Stops a person sharing wishes or sending luck, and hides what they have
-  /// already shared. Their own private copy is untouched.
-  Future<void> block(String uid, {String reason = ''});
+  /// already shared. Their own private copy is untouched. A reason is required
+  /// and is kept with the block.
+  Future<void> block(String uid, {required ModerationReason reason, String note = ''});
 
   /// Lets them share again. Wishes hidden by the block stay hidden until an
   /// admin restores them one by one.
@@ -56,9 +68,13 @@ abstract class AdminBackend {
 
   Future<List<AdminAccount>> listAdmins();
 
-  /// Makes the person with this email an admin. They must already have an
-  /// account; throws [AdminActionException] with a readable reason if not.
-  Future<void> addAdmin(String email);
+  /// Makes the person with this email an admin, with [role]. They must already
+  /// have an account; throws [AdminActionException] with a readable reason if not.
+  Future<void> addAdmin(String email, {AdminRole role = AdminRole.admin});
+
+  /// Changes an admin's role. Only an owner can, never for yourself, and never
+  /// so that no owner is left.
+  Future<void> setAdminRole(String uid, AdminRole role);
 
   /// Removes an admin. The server refuses to remove yourself, the last admin,
   /// or an owner (unless you are one).
@@ -83,7 +99,9 @@ abstract class AdminBackend {
 
   // ---- Overview -------------------------------------------------------------
 
-  Future<OverviewStats> loadOverview({DateTime? now, int days = 14});
+  /// The figures for the last [days] days. [includeReach] is false for a role
+  /// that may not read phone and Plus figures (a moderator).
+  Future<OverviewStats> loadOverview({DateTime? now, int days = 14, bool includeReach = true});
 
   // ---- Controls ---------------------------------------------------------------
 
@@ -93,12 +111,20 @@ abstract class AdminBackend {
 
   Stream<List<Announcement>> watchAnnouncements();
 
+  /// How many phones an announcement to [audience] would reach right now.
+  Future<int> estimateReach(Audience audience);
+
+  /// Sends the announcement to the admin's own phones only, marked as a test.
+  /// Returns how many phones got it. Throws if this account has none.
+  Future<int> sendTestAnnouncement({required String title, required String body});
+
   /// Queues a push; a Cloud Function delivers it and records the result.
   Future<void> sendAnnouncement({required String title, required String body, required Audience audience});
 
   // ---- Activity & export ------------------------------------------------------
 
-  Stream<List<AdminLogEntry>> watchLog();
+  /// Newest first. [limit] grows when an admin asks to load more.
+  Stream<List<AdminLogEntry>> watchLog({int limit = 100});
 
   /// The whole table as CSV text, ready to share as a file.
   Future<String> exportCsv(AdminExport what);
@@ -187,8 +213,8 @@ class FirestoreAdminBackend implements AdminBackend {
   // ---- Moderation ----------------------------------------------------------
 
   @override
-  Stream<List<ModWish>> watchAllWishes() =>
-      _wishes.orderBy('createdAt', descending: true).limit(200).snapshots().map((s) => [
+  Stream<List<ModWish>> watchAllWishes({int limit = 200}) =>
+      _wishes.orderBy('createdAt', descending: true).limit(limit).snapshots().map((s) => [
             for (final d in s.docs)
               if (d.data()['createdAt'] != null)
                 ModWish(
@@ -199,8 +225,8 @@ class FirestoreAdminBackend implements AdminBackend {
           ]);
 
   @override
-  Stream<List<WishReport>> watchReports() =>
-      _reports.orderBy('at', descending: true).limit(200).snapshots().map((s) => [
+  Stream<List<WishReport>> watchReports({int limit = 200}) =>
+      _reports.orderBy('at', descending: true).limit(limit).snapshots().map((s) => [
             for (final d in s.docs)
               WishReport(
                 id: d.id,
@@ -210,6 +236,27 @@ class FirestoreAdminBackend implements AdminBackend {
               ),
           ]);
 
+  /// Writes in one batch, leaving room for the audit entry.
+  static const _batchSize = 400;
+
+  /// Firestore's limit for a `whereIn` query.
+  static const _inLimit = 30;
+
+  /// "k3f9a2, q8m2b7 and 4 more": enough to find the wishes again, short enough
+  /// for one audit line.
+  static String _ids(List<String> ids) {
+    String short(String id) => id.length < 8 ? id : id.substring(id.length - 8);
+    final shown = ids.take(3).map(short).join(', ');
+    return ids.length > 3 ? '$shown and ${ids.length - 3} more' : shown;
+  }
+
+  /// "Spam or links: posted the same link three times", trimmed to fit.
+  static String _why(ModerationReason reason, String note) {
+    final n = note.trim();
+    final text = n.isEmpty ? reason.label : '${reason.label}: $n';
+    return text.length > 150 ? text.substring(0, 150) : text;
+  }
+
   @override
   Future<void> setHidden(String wishId, bool hidden) {
     final batch = _db.batch()..update(_wishes.doc(wishId), {'hidden': hidden});
@@ -218,14 +265,43 @@ class FirestoreAdminBackend implements AdminBackend {
   }
 
   @override
-  Future<void> removeWish(String wishId) async {
-    final reports = await _reports.where('wishId', isEqualTo: wishId).get();
-    final batch = _db.batch()..delete(_wishes.doc(wishId));
-    for (final r in reports.docs) {
-      batch.delete(r.reference);
+  Future<void> setHiddenMany(List<String> wishIds, bool hidden) async {
+    for (var i = 0; i < wishIds.length; i += _batchSize) {
+      final batch = _db.batch();
+      for (final id in wishIds.skip(i).take(_batchSize)) {
+        batch.update(_wishes.doc(id), {'hidden': hidden});
+      }
+      // The audit entry rides in the first batch, so it can't be missed.
+      if (i == 0) _log(batch, hidden ? 'hide' : 'restore', '${wishIds.length} wishes: ${_ids(wishIds)}');
+      await batch.commit();
     }
-    _log(batch, 'remove', 'wish $wishId and ${reports.size} report${reports.size == 1 ? '' : 's'}');
-    await batch.commit();
+  }
+
+  @override
+  Future<void> removeWish(String wishId, {required ModerationReason reason, String note = ''}) =>
+      removeWishes([wishId], reason: reason, note: note);
+
+  @override
+  Future<void> removeWishes(List<String> wishIds, {required ModerationReason reason, String note = ''}) async {
+    if (wishIds.isEmpty) return;
+    final doomed = <DocumentReference<Map<String, dynamic>>>[for (final id in wishIds) _wishes.doc(id)];
+    var reportCount = 0;
+    for (var i = 0; i < wishIds.length; i += _inLimit) {
+      final reports = await _reports.where('wishId', whereIn: wishIds.skip(i).take(_inLimit).toList()).get();
+      reportCount += reports.size;
+      doomed.addAll(reports.docs.map((r) => r.reference));
+    }
+    final summary = wishIds.length == 1 ? 'wish ${wishIds.single}' : '${wishIds.length} wishes: ${_ids(wishIds)}';
+    for (var i = 0; i < doomed.length; i += _batchSize) {
+      final batch = _db.batch();
+      for (final ref in doomed.skip(i).take(_batchSize)) {
+        batch.delete(ref);
+      }
+      if (i == 0) {
+        _log(batch, 'remove', '$summary; $reportCount report${reportCount == 1 ? '' : 's'} cleared. Reason: ${_why(reason, note)}');
+      }
+      await batch.commit();
+    }
   }
 
   @override
@@ -238,6 +314,24 @@ class FirestoreAdminBackend implements AdminBackend {
     return batch.commit();
   }
 
+  @override
+  Future<void> dismissReportsFor(List<String> wishIds) async {
+    final refs = <DocumentReference<Map<String, dynamic>>>[];
+    for (var i = 0; i < wishIds.length; i += _inLimit) {
+      final reports = await _reports.where('wishId', whereIn: wishIds.skip(i).take(_inLimit).toList()).get();
+      refs.addAll(reports.docs.map((r) => r.reference));
+    }
+    if (refs.isEmpty) return;
+    for (var i = 0; i < refs.length; i += _batchSize) {
+      final batch = _db.batch();
+      for (final ref in refs.skip(i).take(_batchSize)) {
+        batch.delete(ref);
+      }
+      if (i == 0) _log(batch, 'dismiss', '${refs.length} reports on ${wishIds.length} wishes: ${_ids(wishIds)}');
+      await batch.commit();
+    }
+  }
+
   // ---- People ---------------------------------------------------------------
 
   @override
@@ -248,14 +342,15 @@ class FirestoreAdminBackend implements AdminBackend {
           ]);
 
   @override
-  Future<void> block(String uid, {String reason = ''}) async {
+  Future<void> block(String uid, {required ModerationReason reason, String note = ''}) async {
     final theirs = await _wishes.where('authorUid', isEqualTo: uid).get();
     // A batch holds 500 writes; the block record and log entry take two.
     final groups = <List<DocumentReference<Map<String, dynamic>>>>[];
-    for (var i = 0; i < theirs.docs.length; i += 400) {
-      groups.add([for (final d in theirs.docs.skip(i).take(400)) d.reference]);
+    for (var i = 0; i < theirs.docs.length; i += _batchSize) {
+      groups.add([for (final d in theirs.docs.skip(i).take(_batchSize)) d.reference]);
     }
     if (groups.isEmpty) groups.add(const []);
+    final why = _why(reason, note);
     for (var i = 0; i < groups.length; i++) {
       final batch = _db.batch();
       for (final ref in groups[i]) {
@@ -263,11 +358,11 @@ class FirestoreAdminBackend implements AdminBackend {
       }
       if (i == 0) {
         batch.set(_blocked.doc(uid), {
-          'reason': reason.length > 200 ? reason.substring(0, 200) : reason,
+          'reason': why,
           'by': _me,
           'at': FieldValue.serverTimestamp(),
         });
-        _log(batch, 'block', 'person $uid; ${theirs.size} wish${theirs.size == 1 ? '' : 'es'} hidden');
+        _log(batch, 'block', 'person $uid; ${theirs.size} wish${theirs.size == 1 ? '' : 'es'} hidden. Reason: $why');
       }
       await batch.commit();
     }
@@ -292,14 +387,18 @@ class FirestoreAdminBackend implements AdminBackend {
           AdminAccount(
             uid: a['uid'] as String,
             email: (a['email'] as String?) ?? '',
-            owner: a['owner'] == true,
+            role: AdminRole.values.firstWhere((r) => r.name == a['role'], orElse: () => AdminRole.admin),
             you: a['you'] == true,
           ),
     ];
   }
 
   @override
-  Future<void> addAdmin(String email) => _call('mwAdminAdd', {'email': email.trim()});
+  Future<void> addAdmin(String email, {AdminRole role = AdminRole.admin}) =>
+      _call('mwAdminAdd', {'email': email.trim(), 'role': role.id});
+
+  @override
+  Future<void> setAdminRole(String uid, AdminRole role) => _call('mwAdminSetRole', {'uid': uid, 'role': role.id});
 
   @override
   Future<void> removeAdmin(String uid) => _call('mwAdminRemove', {'uid': uid});
@@ -330,27 +429,35 @@ class FirestoreAdminBackend implements AdminBackend {
   Future<int> _count(Query<Map<String, dynamic>> q) async => (await q.count().get()).count ?? 0;
 
   @override
-  Future<OverviewStats> loadOverview({DateTime? now, int days = 14}) async {
+  Future<OverviewStats> loadOverview({DateTime? now, int days = 14, bool includeReach = true}) async {
     final clock = now ?? DateTime.now();
     final since = DateTime(clock.year, clock.month, clock.day - (days - 1));
+    // The period just before, the same length, for the trend arrows.
+    final before = DateTime(since.year, since.month, since.day - days);
+
+    // Phone and Plus figures are for owners and admins. A moderator's role is
+    // not allowed to read them, so they are not even asked for.
+    Future<int> reach(Query<Map<String, dynamic>> q) => includeReach ? _count(q) : Future.value(0);
 
     final totals = _wishes.aggregate(count(), sum('luck')).get();
     final hidden = _count(_wishes.where('hidden', isEqualTo: true));
     final reports = _count(_reports);
+    final oldestReport = _reports.orderBy('at').limit(1).get();
     final blocked = _count(_blocked);
-    final devices = _count(_devices);
-    final android = _count(_devices.where('platform', isEqualTo: 'android'));
-    final ios = _count(_devices.where('platform', isEqualTo: 'ios'));
-    final luckAlerts = _count(_devices.where('luckAlerts', isEqualTo: true));
-    final revisit = _count(_devices.where('revisitNudges', isEqualTo: true));
+    final devices = reach(_devices);
+    final android = reach(_devices.where('platform', isEqualTo: 'android'));
+    final ios = reach(_devices.where('platform', isEqualTo: 'ios'));
+    final luckAlerts = reach(_devices.where('luckAlerts', isEqualTo: true));
+    final revisit = reach(_devices.where('revisitNudges', isEqualTo: true));
     // Counted here, not by a query, so a gift that has run out is not counted.
-    final plus = _db.collection('subscriptions').limit(_windowCap).get();
+    final plus = includeReach ? _db.collection('subscriptions').limit(_windowCap).get() : null;
     final categories = {
       for (final c in WishCategory.values.where((c) => c != WishCategory.daily))
         c: _count(_wishes.where('category', isEqualTo: c.name)),
     };
+    // Both periods in one read, newest first.
     final window = _wishes
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(before))
         .orderBy('createdAt', descending: true)
         .limit(_windowCap + 1)
         .get();
@@ -358,7 +465,20 @@ class FirestoreAdminBackend implements AdminBackend {
     final t = await totals;
     final w = await window;
     final capped = w.docs.length > _windowCap;
-    final docs = w.docs.take(_windowCap).toList();
+    final read = w.docs.take(_windowCap).toList();
+
+    DateTime? created(QueryDocumentSnapshot<Map<String, dynamic>> d) => dateOf(d.data()['createdAt']);
+    final current = [for (final d in read) if (created(d) != null && !created(d)!.isBefore(since)) d];
+    final prior = [for (final d in read) if (created(d) != null && created(d)!.isBefore(since)) d];
+
+    PeriodTotals totalsOf(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) => PeriodTotals(
+          wishes: docs.length,
+          wishers: {for (final d in docs) if (d.data()['authorUid'] != null) d.data()['authorUid']}.length,
+          luck: docs.fold(0, (a, d) => a + ((d.data()['luck'] as num?)?.toInt() ?? 0)),
+        );
+
+    final now0 = totalsOf(current);
+    final oldest = (await oldestReport).docs.firstOrNull;
 
     return OverviewStats(
       wishes: t.count ?? 0,
@@ -371,16 +491,18 @@ class FirestoreAdminBackend implements AdminBackend {
       iosDevices: await ios,
       luckAlertDevices: await luckAlerts,
       revisitDevices: await revisit,
-      plusMembers: (await plus).docs.where((d) => _record(d.id, d.data()).hasPlus(clock)).length,
+      plusMembers: plus == null ? 0 : (await plus).docs.where((d) => _record(d.id, d.data()).hasPlus(clock)).length,
       byCategory: {for (final e in categories.entries) e.key: await e.value},
-      daily: bucketByDay(
-        [for (final d in docs) if (dateOf(d.data()['createdAt']) != null) dateOf(d.data()['createdAt'])!],
-        now: clock,
-        days: days,
-      ),
-      wishers: {for (final d in docs) if (d.data()['authorUid'] != null) d.data()['authorUid']}.length,
-      windowLuck: docs.fold(0, (a, d) => a + ((d.data()['luck'] as num?)?.toInt() ?? 0)),
-      windowCapped: capped,
+      daily: bucketByDay([for (final d in current) created(d)!], now: clock, days: days),
+      wishers: now0.wishers,
+      windowLuck: now0.luck,
+      // If the read stopped while still inside the current period, that period
+      // is incomplete. If it stopped later, the current period is complete but
+      // the earlier one is not, so no trend is shown rather than a wrong one.
+      windowCapped: capped && prior.isEmpty,
+      previous: capped ? null : totalsOf(prior),
+      oldestOpenReport: oldest == null ? null : dateOf(oldest.data()['at']),
+      includesReach: includeReach,
     );
   }
 
@@ -440,11 +562,22 @@ class FirestoreAdminBackend implements AdminBackend {
     return batch.commit();
   }
 
+  @override
+  Future<int> estimateReach(Audience audience) => _count(
+        audience == Audience.all ? _devices : _devices.where('platform', isEqualTo: audience.id),
+      );
+
+  @override
+  Future<int> sendTestAnnouncement({required String title, required String body}) async {
+    final r = await _call('mwAnnounceTest', {'title': title.trim(), 'body': body.trim()});
+    return (r['sent'] as num?)?.toInt() ?? 0;
+  }
+
   // ---- Activity & export ------------------------------------------------------
 
   @override
-  Stream<List<AdminLogEntry>> watchLog() =>
-      _db.collection('adminLog').orderBy('at', descending: true).limit(100).snapshots().map((s) => [
+  Stream<List<AdminLogEntry>> watchLog({int limit = 100}) =>
+      _db.collection('adminLog').orderBy('at', descending: true).limit(limit).snapshots().map((s) => [
             for (final d in s.docs)
               AdminLogEntry(
                 id: d.id,

@@ -21,7 +21,19 @@ class AdminPage extends StatelessWidget {
   final Widget child;
   final List<Widget> actions;
   final bool root;
-  const AdminPage({super.key, required this.title, required this.child, this.actions = const [], this.root = false});
+
+  /// The part of the dashboard this page belongs to. If the signed-in admin's
+  /// role may not open it, the page says so instead of showing it. (The server
+  /// refuses the data anyway; this is a second, visible line of defence.)
+  final AdminArea? area;
+  const AdminPage({
+    super.key,
+    required this.title,
+    required this.child,
+    this.actions = const [],
+    this.root = false,
+    this.area,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -37,20 +49,30 @@ class AdminPage extends StatelessWidget {
         body: Backdrop(child: SafeArea(child: AdminMessage('Admin access has ended for this account.'))),
       );
     }
-    return _frame(context);
+    final a = area;
+    final allowed = a == null || context.select<AppState, bool>((s) => s.canAdmin(a));
+    return _frame(
+      context,
+      allowed ? child : const AdminMessage('Your role does not include this part of the dashboard.'),
+    );
   }
 
-  Widget _frame(BuildContext context) => Scaffold(
+  Widget _frame(BuildContext context, Widget body) => Scaffold(
         body: Backdrop(
           child: SafeArea(
-            child: Column(children: [
+            // On a tablet the page stays a readable column, not a wall of glass.
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: Column(children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(MW.gutter, 12, MW.gutter, 0),
                 child: Row(children: [
                   RoundIconButton(
                     glyph: root ? GlyphKind.close : GlyphKind.chevronLeft,
                     semanticLabel: root ? 'Close' : 'Back',
-                    onPressed: () => Navigator.of(context).pop(),
+                    // maybePop, so a page that guards unsaved changes can ask first.
+                    onPressed: () => Navigator.of(context).maybePop(),
                   ),
                   const Spacer(),
                   ...actions,
@@ -60,8 +82,10 @@ class AdminPage extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(MW.gutter + 4, 14, MW.gutter, 16),
                 child: Align(alignment: Alignment.centerLeft, child: GlowTitle(title, size: 28)),
               ),
-              Expanded(child: child),
+              Expanded(child: body),
             ]),
+              ),
+            ),
           ),
         ),
       );
@@ -99,7 +123,7 @@ class LiveView<T> extends StatelessWidget {
         stream: stream,
         builder: (context, snap) {
           if (snap.hasError) return const AdminMessage(adminLoadError);
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: MW.lilac));
+          if (!snap.hasData) return const AdminSkeleton();
           return builder(context, snap.data as T);
         },
       );
@@ -123,9 +147,7 @@ class LiveView3<A, B, C> extends StatelessWidget {
             stream: c,
             builder: (context, sc) {
               if (sa.hasError || sb.hasError || sc.hasError) return const AdminMessage(adminLoadError);
-              if (!sa.hasData || !sb.hasData || !sc.hasData) {
-                return const Center(child: CircularProgressIndicator(color: MW.lilac));
-              }
+              if (!sa.hasData || !sb.hasData || !sc.hasData) return const AdminSkeleton();
               return builder(context, sa.data as A, sb.data as B, sc.data as C);
             },
           ),
@@ -139,7 +161,10 @@ class MetricTile extends StatelessWidget {
   final int value;
   final Color color;
   final String? hint;
-  const MetricTile({super.key, required this.label, required this.value, this.color = MW.gold, this.hint});
+
+  /// How it moved against the period before (a [TrendChip]), if known.
+  final Widget? trend;
+  const MetricTile({super.key, required this.label, required this.value, this.color = MW.gold, this.hint, this.trend});
 
   @override
   Widget build(BuildContext context) => Semantics(
@@ -158,6 +183,7 @@ class MetricTile extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Caps(label, size: 10),
+            if (trend != null) ...[const SizedBox(height: 5), trend!],
             if (hint != null) ...[
               const SizedBox(height: 4),
               Text(hint!, style: MW.ui(12, color: MW.textFaint, height: 1.3)),
@@ -348,16 +374,20 @@ class FilterPills<T> extends StatelessWidget {
   const FilterPills({super.key, required this.options, required this.value, required this.onChanged});
 
   @override
-  Widget build(BuildContext context) => SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: MW.gutter),
-        child: Row(children: [
-          for (final o in options)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _Pill(label: o.$2, selected: o.$1 == value, onTap: () => onChanged(o.$1)),
-            ),
-        ]),
+  // Full width, or the scroll view shrinks to its pills and the Column centres them.
+  Widget build(BuildContext context) => SizedBox(
+        width: double.infinity,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: MW.gutter),
+          child: Row(children: [
+            for (final o in options)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: _Pill(label: o.$2, selected: o.$1 == value, onTap: () => onChanged(o.$1)),
+              ),
+          ]),
+        ),
       );
 }
 
@@ -511,4 +541,312 @@ class _BarsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_BarsPainter old) => old.days != days;
+}
+
+// ---- Loading ------------------------------------------------------------------
+
+/// Soft blocks that pulse while a page loads, so the shape of the page shows
+/// before its data does. Holds still when the device asks for reduced motion.
+class AdminSkeleton extends StatefulWidget {
+  final int rows;
+  const AdminSkeleton({super.key, this.rows = 4});
+
+  @override
+  State<AdminSkeleton> createState() => _AdminSkeletonState();
+}
+
+class _AdminSkeletonState extends State<AdminSkeleton> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+      _c.stop();
+    } else if (!_c.isAnimating) {
+      _c.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        label: 'Loading',
+        liveRegion: true,
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (_, _) => ListView(
+            // Sizes itself to its blocks, so it also works inside another list.
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(MW.gutter, 4, MW.gutter, 0),
+            children: [
+              for (var i = 0; i < widget.rows; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Container(
+                    height: i == 0 ? 56 : 104,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(i == 0 ? 28 : 22),
+                      color: Colors.white.withValues(alpha: 0.05 + 0.06 * _c.value),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+}
+
+// ---- Reasons --------------------------------------------------------------------
+
+typedef ReasonResult = ({ModerationReason reason, String note});
+
+/// Asks why, before something that can't be undone. A reason is required, and
+/// it goes into the audit log so the action can be explained later. Returns
+/// null if the admin backs out.
+Future<ReasonResult?> showReasonSheet(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required String confirmLabel,
+}) =>
+    showModalBottomSheet<ReasonResult>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: MW.inkDeep,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      builder: (_) => _ReasonSheet(title: title, message: message, confirmLabel: confirmLabel),
+    );
+
+class _ReasonSheet extends StatefulWidget {
+  final String title;
+  final String message;
+  final String confirmLabel;
+  const _ReasonSheet({required this.title, required this.message, required this.confirmLabel});
+
+  @override
+  State<_ReasonSheet> createState() => _ReasonSheetState();
+}
+
+class _ReasonSheetState extends State<_ReasonSheet> {
+  final _note = TextEditingController();
+  ModerationReason? _picked;
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(MW.gutter, 0, MW.gutter, MediaQuery.viewInsetsOf(context).bottom + 12),
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(widget.title.toUpperCase(), style: MW.display(21)),
+              const SizedBox(height: 10),
+              Text(widget.message, style: MW.ui(14.5, color: MW.textDim, height: 1.5)),
+              const SizedBox(height: 14),
+              const Hairline(),
+              for (final r in ModerationReason.values) ...[
+                Semantics(
+                  button: true,
+                  selected: _picked == r,
+                  label: r.label,
+                  excludeSemantics: true,
+                  child: GestureDetector(
+                    key: ValueKey('reason-${r.name}'),
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => setState(() => _picked = r),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      child: Row(children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 160),
+                          width: 22,
+                          height: 22,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: _picked == r ? MW.lilac : const Color(0x66FFFFFF), width: 1.6),
+                          ),
+                          child: _picked == r
+                              ? Center(
+                                  child: Container(
+                                    width: 10,
+                                    height: 10,
+                                    decoration: const BoxDecoration(shape: BoxShape.circle, gradient: MW.glow),
+                                  ),
+                                )
+                              : null,
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(child: Text(r.label, style: MW.ui(15.5, color: MW.text, weight: 700))),
+                      ]),
+                    ),
+                  ),
+                ),
+                const Hairline(),
+              ],
+              const SizedBox(height: 14),
+              AdminField(
+                key: const ValueKey('reason-note'),
+                controller: _note,
+                hint: 'Add a note (optional)',
+                minLines: 1,
+                maxLines: 3,
+                maxLength: 140,
+              ),
+              const SizedBox(height: 12),
+              GlowButton(
+                widget.confirmLabel,
+                onPressed: _picked == null
+                    ? null
+                    : () => Navigator.of(context).pop<ReasonResult>((reason: _picked!, note: _note.text.trim())),
+              ),
+              Center(child: QuietLink('Cancel', onPressed: () => Navigator.of(context).pop())),
+            ]),
+          ),
+        ),
+      );
+}
+
+// ---- Small pieces -----------------------------------------------------------------
+
+/// How a figure moved against the period before, as "▲ 25%". Nothing at all
+/// when there is nothing sensible to say.
+class TrendChip extends StatelessWidget {
+  final double? delta;
+
+  /// Whether more is better. For wishes and luck it is; for open reports it is
+  /// not, so a rise shows in the warning colour.
+  final bool upIsGood;
+  const TrendChip(this.delta, {super.key, this.upIsGood = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = delta;
+    if (d == null) return const SizedBox.shrink();
+    final pct = (d.abs() * 100).round();
+    final flat = pct == 0;
+    final up = d > 0;
+    final good = flat ? null : (up == upIsGood);
+    final color = flat ? MW.textFaint : (good! ? MW.goldBright : adminDanger);
+    return Semantics(
+      label: flat
+          ? 'No change compared with the previous period'
+          : '${up ? 'Up' : 'Down'} $pct percent compared with the previous period',
+      excludeSemantics: true,
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        // Drawn, not typed: the ▲ ▼ characters are missing from some fonts and
+        // would show as empty boxes.
+        if (flat)
+          Container(width: 9, height: 2, margin: const EdgeInsets.only(right: 2), color: color)
+        else
+          RotatedBox(quarterTurns: up ? 3 : 1, child: Glyph(GlyphKind.chevronRight, size: 14, color: color, stroke: 2.4)),
+        const SizedBox(width: 3),
+        Text('$pct%', style: MW.ui(12.5, color: color, weight: 800)),
+      ]),
+    );
+  }
+}
+
+/// "just now", "12 min", "30 hours", "3 days": how long ago something was.
+String ageLabel(DateTime then, {DateTime? now}) {
+  final d = (now ?? DateTime.now()).difference(then);
+  if (d.inMinutes < 1) return 'just now';
+  if (d.inMinutes < 60) return '${d.inMinutes} min';
+  if (d.inHours < 48) return '${d.inHours} hour${d.inHours == 1 ? '' : 's'}';
+  return '${d.inDays} days';
+}
+
+/// A compact search box with a clear button.
+class AdminSearchField extends StatelessWidget {
+  final TextEditingController controller;
+  final String hint;
+  final ValueChanged<String> onChanged;
+  const AdminSearchField({super.key, required this.controller, required this.hint, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.only(left: 16, right: 4),
+        decoration: BoxDecoration(
+          color: const Color(0x1AFFFFFF),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: const Color(0x40FFFFFF)),
+        ),
+        child: Row(children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              onChanged: onChanged,
+              textInputAction: TextInputAction.search,
+              autocorrect: false,
+              cursorColor: MW.lilac,
+              style: MW.ui(15, color: MW.text, weight: 600),
+              decoration: InputDecoration(
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                hintText: hint,
+                hintStyle: MW.ui(15, color: MW.textFaint),
+              ),
+            ),
+          ),
+          ListenableBuilder(
+            listenable: controller,
+            builder: (_, _) => controller.text.isEmpty
+                ? const SizedBox(width: 12)
+                : Semantics(
+                    button: true,
+                    label: 'Clear search',
+                    excludeSemantics: true,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        controller.clear();
+                        onChanged('');
+                      },
+                      child: const SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: Center(child: Glyph(GlyphKind.close, size: 15, color: MW.textFaint, stroke: 1.6)),
+                      ),
+                    ),
+                  ),
+          ),
+        ]),
+      );
+}
+
+/// An admin's role as a small label: gold for owners, quiet for the rest.
+class RolePill extends StatelessWidget {
+  final AdminRole role;
+  const RolePill(this.role, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (role) {
+      AdminRole.owner => MW.goldBright,
+      AdminRole.admin => MW.lilac,
+      AdminRole.moderator => MW.water,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: color.withValues(alpha: 0.14),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+      ),
+      child: Text(role.label.toUpperCase(), style: MW.ui(10.5, color: color, weight: 900).copyWith(letterSpacing: 1)),
+    );
+  }
 }

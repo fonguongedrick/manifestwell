@@ -14,9 +14,28 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Any admin, whatever their role.
     function isAdmin() {
       return signedIn()
         && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function adminData() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
+    }
+
+    // owner | admin | moderator. A document with no role is an owner when it
+    // was created in the console (no addedBy) and an admin when the app made it,
+    // which is how every admin added before roles existed was recorded.
+    function adminRole() {
+      return adminData().get('role', 'addedBy' in adminData() ? 'admin' : 'owner');
+    }
+
+    // Owners and admins: everything except what is reserved for owners.
+    // A moderator is deliberately not one: they review wishes and block people
+    // and nothing more (no announcements, controls, subscriptions, admin list).
+    function isFullAdmin() {
+      return isAdmin() && adminRole() in ['owner', 'admin'];
     }
 
     function changedKeys() {
@@ -42,7 +61,7 @@ service cloud.firestore {
     // the server refuse removing the last admin or an owner.
     match /admins/{uid} {
       allow get: if signedIn() && request.auth.uid == uid;
-      allow list: if isAdmin();
+      allow list: if isFullAdmin();
       allow write: if false;
     }
 
@@ -51,7 +70,7 @@ service cloud.firestore {
     // admin. A person can read their own (that is how their phone learns of a
     // gift) and admins can read all. Only the server ever writes it.
     match /subscriptions/{uid} {
-      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow read: if isFullAdmin() || (signedIn() && request.auth.uid == uid);
       allow write: if false;
     }
 
@@ -150,7 +169,7 @@ service cloud.firestore {
     // Only the Cloud Functions (which bypass these rules) ever read them to send.
     // An admin can read them to count reach, never to change them.
     match /devices/{token} {
-      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || isAdmin();
+      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || isFullAdmin();
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
       allow create, update: if signedIn()
         && request.resource.data.keys().hasOnly(
@@ -170,7 +189,7 @@ service cloud.firestore {
     // and only an admin can change.
     match /config/{doc} {
       allow read: if signedIn();
-      allow create, update: if isAdmin()
+      allow create, update: if isFullAdmin()
         && doc == 'app'
         && request.resource.data.keys().hasOnly(
              ['wishingPaused', 'banner', 'blockedTerms', 'updatedAt', 'updatedBy'])
@@ -198,8 +217,8 @@ service cloud.firestore {
     // A push to every phone. An admin queues it; the onAnnouncementCreated
     // function sends it and records how many phones it reached.
     match /announcements/{id} {
-      allow read: if isAdmin();
-      allow create: if isAdmin()
+      allow read: if isFullAdmin();
+      allow create: if isFullAdmin()
         && request.resource.data.keys().hasOnly(
              ['title', 'body', 'audience', 'createdBy', 'createdAt', 'status', 'sent', 'failed'])
         && request.resource.data.title is string

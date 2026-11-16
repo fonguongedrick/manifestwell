@@ -257,3 +257,45 @@ test("secret comparison: equal only when identical and non-empty", () => {
   assert.equal(L.safeEqual("", ""), false);
   assert.equal(L.safeEqual(undefined, "x"), false);
 });
+
+test("role of an admin document: explicit role wins, otherwise console = owner, app-made = admin", () => {
+  assert.equal(L.roleOfAdminDoc({role: "moderator", addedBy: "x"}), "moderator");
+  assert.equal(L.roleOfAdminDoc({role: "owner"}), "owner");
+  assert.equal(L.roleOfAdminDoc({}), "owner"); // created in the console
+  assert.equal(L.roleOfAdminDoc({addedBy: "someone"}), "admin"); // added before roles existed
+  assert.equal(L.roleOfAdminDoc({role: "god", addedBy: "x"}), "admin"); // junk never promotes
+  assert.equal(L.roleOfAdminDoc(null), "owner");
+});
+
+test("roles from a client are validated", () => {
+  assert.equal(L.normalizeRole(" Moderator "), "moderator");
+  assert.equal(L.normalizeRole("admin"), "admin");
+  for (const bad of ["", "root", null, undefined, "owner2"]) assert.equal(L.normalizeRole(bad), null, String(bad));
+});
+
+test("only owners and admins are 'full'; a moderator is not", () => {
+  assert.equal(L.isFullRole("owner"), true);
+  assert.equal(L.isFullRole("admin"), true);
+  assert.equal(L.isFullRole("moderator"), false);
+  assert.equal(L.isFullRole(undefined), false);
+});
+
+test("adding an admin: moderators cannot; only an owner can make an owner", () => {
+  assert.equal(L.whyCannotAddWithRole("owner", "owner"), null);
+  assert.equal(L.whyCannotAddWithRole("owner", "moderator"), null);
+  assert.equal(L.whyCannotAddWithRole("admin", "admin"), null);
+  assert.equal(L.whyCannotAddWithRole("admin", "moderator"), null);
+  assert.match(L.whyCannotAddWithRole("admin", "owner"), /owner/);
+  assert.match(L.whyCannotAddWithRole("moderator", "moderator"), /owners and admins/);
+});
+
+test("changing a role: owners only, never your own, never the last owner", () => {
+  const base = {callerUid: "a", targetUid: "b", callerRole: "owner", targetRole: "admin", newRole: "moderator", ownerCount: 2};
+  assert.equal(L.whyCannotSetRole(base), null);
+  assert.match(L.whyCannotSetRole({...base, callerRole: "admin"}), /Only an owner/);
+  assert.match(L.whyCannotSetRole({...base, callerRole: "moderator"}), /Only an owner/);
+  assert.match(L.whyCannotSetRole({...base, targetUid: "a"}), /own role/);
+  assert.match(L.whyCannotSetRole({...base, targetRole: "owner", newRole: "admin", ownerCount: 1}), /at least one owner/);
+  assert.equal(L.whyCannotSetRole({...base, targetRole: "owner", newRole: "admin", ownerCount: 2}), null);
+  assert.equal(L.whyCannotSetRole({...base, targetRole: "owner", newRole: "owner", ownerCount: 1}), null);
+});

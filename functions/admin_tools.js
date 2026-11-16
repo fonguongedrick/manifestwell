@@ -29,18 +29,25 @@ const RC_WEBHOOK_AUTH = defineString("REVENUECAT_WEBHOOK_AUTH", {default: ""});
 const ENTITLEMENT = "plus";
 
 /**
- * Stops anyone who isn't an admin.
+ * Stops anyone who isn't an admin, and (with `full`) anyone who is only a
+ * moderator. Every function below calls this first.
  * @param {object} request The callable request.
- * @return {Promise<{uid: string, isOwner: boolean, label: string}>} The caller.
+ * @param {{full: boolean}=} options Pass full: true for owner/admin-only work.
+ * @return {Promise<{uid: string, role: string, isOwner: boolean, label: string}>}
+ *     The caller.
  */
-async function requireAdmin(request) {
+async function requireAdmin(request, {full = false} = {}) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
   const snap = await db.collection("admins").doc(request.auth.uid).get();
   if (!snap.exists) throw new HttpsError("permission-denied", "Admins only.");
+  const role = logic.roleOfAdminDoc(snap.data());
+  if (full && !logic.isFullRole(role)) {
+    throw new HttpsError("permission-denied", "Your role does not allow that.");
+  }
   return {
     uid: request.auth.uid,
-    // An admin created in the console has no addedBy: that is an owner.
-    isOwner: !snap.get("addedBy"),
+    role,
+    isOwner: role === "owner",
     label: (request.auth.token && request.auth.token.email) || request.auth.uid,
   };
 }
@@ -116,7 +123,7 @@ async function subscriberState(user) {
 const CALLABLE = {region: REGION};
 
 exports.mwAdminList = onCall(CALLABLE, async (request) => {
-  const me = await requireAdmin(request);
+  const me = await requireAdmin(request, {full: true});
   const snap = await db.collection("admins").get();
   const ids = snap.docs.slice(0, 100).map((d) => ({uid: d.id}));
   const users = ids.length ? (await admin.auth().getUsers(ids)).users : [];
@@ -125,27 +132,54 @@ exports.mwAdminList = onCall(CALLABLE, async (request) => {
     admins: snap.docs.map((d) => ({
       uid: d.id,
       email: (byUid.get(d.id) && byUid.get(d.id).email) || d.get("email") || "",
-      owner: !d.get("addedBy"),
+      role: logic.roleOfAdminDoc(d.data()),
       you: d.id === me.uid,
     })),
   };
 });
 
 exports.mwAdminAdd = onCall(CALLABLE, async (request) => {
-  const me = await requireAdmin(request);
+  const me = await requireAdmin(request, {full: true});
   const email = logic.normalizeEmail(request.data && request.data.email);
   if (!email) throw new HttpsError("invalid-argument", "That is not a valid email address.");
+  const role = logic.normalizeRole(request.data && request.data.role) || "admin";
+  const why = logic.whyCannotAddWithRole(me.role, role);
+  if (why) throw new HttpsError("permission-denied", why);
   const user = await findUser(email);
   if (user.disabled) throw new HttpsError("failed-precondition", "That account is disabled.");
   const ref = db.collection("admins").doc(user.uid);
   if ((await ref.get()).exists) throw new HttpsError("already-exists", "They are already an admin.");
-  await ref.set({email, addedBy: me.uid, addedAt: Timestamp.now()});
-  await audit(me, "admin-add", `${email} made an admin`);
-  return {uid: user.uid, email};
+  await ref.set({email, role, addedBy: me.uid, addedAt: Timestamp.now()});
+  await audit(me, "admin-add", `${email} made ${role === "admin" ? "an admin" : "a " + role}`);
+  return {uid: user.uid, email, role};
+});
+
+exports.mwAdminSetRole = onCall(CALLABLE, async (request) => {
+  const me = await requireAdmin(request, {full: true});
+  const targetUid = String((request.data && request.data.uid) || "");
+  const newRole = logic.normalizeRole(request.data && request.data.role);
+  if (!targetUid || !newRole) throw new HttpsError("invalid-argument", "Choose an admin and a role.");
+  const admins = await db.collection("admins").get();
+  const target = admins.docs.find((d) => d.id === targetUid);
+  if (!target) throw new HttpsError("not-found", "They are not an admin.");
+  const targetRole = logic.roleOfAdminDoc(target.data());
+  const why = logic.whyCannotSetRole({
+    callerUid: me.uid,
+    targetUid,
+    callerRole: me.role,
+    targetRole,
+    newRole,
+    ownerCount: admins.docs.filter((d) => logic.roleOfAdminDoc(d.data()) === "owner").length,
+  });
+  if (why) throw new HttpsError("failed-precondition", why);
+  // Setting the role explicitly also settles any ambiguity of an old document.
+  await target.ref.set({role: newRole}, {merge: true});
+  await audit(me, "admin-role", `${target.get("email") || targetUid}: ${targetRole} to ${newRole}`);
+  return {ok: true, role: newRole};
 });
 
 exports.mwAdminRemove = onCall(CALLABLE, async (request) => {
-  const me = await requireAdmin(request);
+  const me = await requireAdmin(request, {full: true});
   const targetUid = String((request.data && request.data.uid) || "");
   if (!targetUid) throw new HttpsError("invalid-argument", "Missing admin.");
   const admins = await db.collection("admins").get();
@@ -155,7 +189,7 @@ exports.mwAdminRemove = onCall(CALLABLE, async (request) => {
     callerUid: me.uid,
     targetUid,
     callerIsOwner: me.isOwner,
-    targetIsOwner: !target.get("addedBy"),
+    targetIsOwner: logic.roleOfAdminDoc(target.data()) === "owner",
     adminCount: admins.size,
   });
   if (why) throw new HttpsError("failed-precondition", why);
@@ -165,12 +199,12 @@ exports.mwAdminRemove = onCall(CALLABLE, async (request) => {
 });
 
 exports.mwSubLookup = onCall(CALLABLE, async (request) => {
-  await requireAdmin(request);
+  await requireAdmin(request, {full: true});
   return subscriberState(await findUser(request.data && request.data.query));
 });
 
 exports.mwSubGrant = onCall(CALLABLE, async (request) => {
-  const me = await requireAdmin(request);
+  const me = await requireAdmin(request, {full: true});
   const kind = String((request.data && request.data.kind) || "");
   const terms = logic.grantTerms(kind, Date.now());
   if (!terms) throw new HttpsError("invalid-argument", "Choose how long to give Plus for.");
@@ -189,7 +223,7 @@ exports.mwSubGrant = onCall(CALLABLE, async (request) => {
 });
 
 exports.mwSubRevoke = onCall(CALLABLE, async (request) => {
-  const me = await requireAdmin(request);
+  const me = await requireAdmin(request, {full: true});
   const user = await findUser(request.data && request.data.uid);
   await db.collection("subscriptions").doc(user.uid).set({
     grantLifetime: false,
@@ -198,6 +232,39 @@ exports.mwSubRevoke = onCall(CALLABLE, async (request) => {
   }, {merge: true});
   await audit(me, "revoke", `Given Plus removed from ${user.email || user.uid}`);
   return subscriberState(user);
+});
+
+/**
+ * Sends an announcement to the caller's own phones only, marked as a test, so
+ * an admin can see exactly how it will look before it goes to everyone.
+ */
+exports.mwAnnounceTest = onCall(CALLABLE, async (request) => {
+  const me = await requireAdmin(request, {full: true});
+  const a = {
+    status: "queued",
+    title: request.data && request.data.title,
+    body: request.data && request.data.body,
+    audience: "all",
+  };
+  if (!logic.isValidAnnouncement(a)) {
+    throw new HttpsError("invalid-argument", "Write a title and a message first.");
+  }
+  const phones = await db.collection("devices").where("uid", "==", me.uid).get();
+  const targets = phones.docs.filter((d) => logic.matchesAudience(d.data(), "all"));
+  if (!targets.length) {
+    throw new HttpsError("failed-precondition",
+        "This account has no phone with notifications on. Turn them on in Settings first.");
+  }
+  const message = logic.buildAnnouncementMessage(a);
+  const result = await admin.messaging().sendEachForMulticast({
+    tokens: targets.map((d) => d.id),
+    notification: {title: `[Test] ${message.title}`.slice(0, 80), body: message.body},
+    data: {type: "announcement"},
+    android: {priority: "normal", notification: {channelId: "announcements", icon: "ic_stat_manifestwell", color: "#A25CFF"}},
+    apns: {payload: {aps: {sound: "default"}}},
+  });
+  await audit(me, "announce-test", `"${message.title}" test to ${result.successCount} phone(s)`);
+  return {sent: result.successCount, failed: result.failureCount};
 });
 
 /**

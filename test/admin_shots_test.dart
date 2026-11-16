@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:manifestwell/models/admin.dart';
 import 'package:manifestwell/models/moderation.dart';
 import 'package:manifestwell/models/wish.dart';
+import 'package:manifestwell/screens/admin/activity_screen.dart';
 import 'package:manifestwell/screens/admin/admins_screen.dart';
 import 'package:manifestwell/screens/admin/announcements_screen.dart';
 import 'package:manifestwell/screens/admin/subscriptions_screen.dart';
@@ -37,13 +38,15 @@ void main() {
   setUpAll(loadAppFonts);
   final enabled = Platform.environment.containsKey('SHOTS');
 
-  Future<FakeAdminBackend> open(WidgetTester t, Widget screen, {AppConfig? config}) async {
+  Future<FakeAdminBackend> open(WidgetTester t, Widget screen, {AppConfig? config, AdminRole role = AdminRole.owner}) async {
     debugDisableShadows = false;
     t.platformDispatcher.accessibilityFeaturesTestValue =
         const FakeAccessibilityFeatures(disableAnimations: true);
     addTearDown(t.platformDispatcher.clearAccessibilityFeaturesTestValue);
     SharedPreferences.setMockInitialValues({'onboarded': true});
-    final backend = FakeWellBackend(account: 'boss@braidstribe.com')..admin = true;
+    final backend = FakeWellBackend(account: 'boss@braidstribe.com')
+      ..admin = true
+      ..role = role;
     final state = await AppState.load(backend: backend);
     if (config != null) {
       backend.configFeed.add(config);
@@ -105,6 +108,52 @@ void main() {
     await shot(t, 'admin_3_moderation');
   });
 
+  testWidgets('moderation selecting', skip: !enabled, (t) async {
+    final tools = await open(t, const ModerationScreen());
+    tools.wishes.add([
+      ModWish(_wish('w1', 'I hope everyone here fails, you are all pathetic', WishCategory.love, 0),
+          hidden: false, authorUid: 'k3f9a2x'),
+      ModWish(_wish('w2', 'A calm new home near my family', WishCategory.home, 14, hoursAgo: 30),
+          hidden: false, authorUid: 'q8m2b7z'),
+      ModWish(_wish('w3', 'Win the lottery, then travel everywhere', WishCategory.travel, 3, hoursAgo: 50),
+          hidden: true, authorUid: 'z1y2x3w'),
+    ]);
+    tools.reports.add([
+      WishReport(id: 'r1', wishId: 'w1', reason: 'Unkind or harmful', at: DateTime.now().subtract(const Duration(hours: 5))),
+      WishReport(id: 'r2', wishId: 'w1', reason: 'Spam or links', at: DateTime.now().subtract(const Duration(hours: 2))),
+      WishReport(id: 'r3', wishId: 'w2', reason: 'Other', at: DateTime.now().subtract(const Duration(hours: 26))),
+    ]);
+    tools.blocked.add(const []);
+    for (var i = 0; i < 5; i++) {
+      await t.pump(const Duration(milliseconds: 120));
+    }
+    await t.tap(find.text('All wishes'));
+    await t.pump(const Duration(milliseconds: 300));
+    await t.tap(find.text('Select'));
+    await t.pump(const Duration(milliseconds: 300));
+    await t.tap(find.text('I hope everyone here fails, you are all pathetic'));
+    await t.tap(find.text('A calm new home near my family'));
+    await shot(t, 'admin_3b_moderation_selecting');
+  });
+
+  testWidgets('hub as a moderator', skip: !enabled, (t) async {
+    final tools = await open(t, const AdminScreen(), role: AdminRole.moderator);
+    tools.reports.add(const [WishReport(id: 'r1', wishId: 'w1', reason: 'Spam')]);
+    await shot(t, 'admin_1b_hub_moderator');
+  });
+
+  testWidgets('activity', skip: !enabled, (t) async {
+    final tools = await open(t, const ActivityScreen());
+    tools.log.add([
+      AdminLogEntry(id: '1', action: 'remove', detail: 'wish 4f9a2b1c; 2 reports cleared. Reason: Harassment or unkindness', by: 'mod@braidstribe.com', at: DateTime.now().subtract(const Duration(minutes: 12))),
+      AdminLogEntry(id: '2', action: 'block', detail: 'person k3f9a2x; 3 wishes hidden. Reason: Spam or links: same link five times', by: 'boss@braidstribe.com', at: DateTime.now().subtract(const Duration(hours: 3))),
+      AdminLogEntry(id: '3', action: 'announce', detail: '"Gratitude circle on Friday" to Everyone', by: 'boss@braidstribe.com', at: DateTime.now().subtract(const Duration(days: 1))),
+      AdminLogEntry(id: '4', action: 'grant', detail: 'Plus (month) given to ada@example.com', by: 'boss@braidstribe.com', at: DateTime.now().subtract(const Duration(days: 2))),
+      AdminLogEntry(id: '5', action: 'admin-role', detail: 'mod@braidstribe.com: admin to moderator', by: 'boss@braidstribe.com', at: DateTime.now().subtract(const Duration(days: 4))),
+    ]);
+    await shot(t, 'admin_8_activity');
+  });
+
   testWidgets('announcements', skip: !enabled, (t) async {
     await t.binding.setSurfaceSize(const Size(430, 1300));
     final tools = await open(t, const AnnouncementsScreen());
@@ -130,6 +179,8 @@ void main() {
         at: DateTime.now().subtract(const Duration(days: 9)),
       ),
     ]);
+    await t.enterText(find.byType(TextField).at(0), 'Gratitude circle on Friday');
+    await t.enterText(find.byType(TextField).at(1), 'Join us at 7pm for a live gratitude circle in the Well.');
     await shot(t, 'admin_4_announcements');
   });
 

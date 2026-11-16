@@ -43,7 +43,7 @@ class AppState extends ChangeNotifier {
   final ValueNotifier<int?> openTab = ValueNotifier(null);
   StreamSubscription<List<Wish>>? _wellSub;
   StreamSubscription<AppConfig>? _configSub;
-  StreamSubscription<bool>? _adminSub;
+  StreamSubscription<AdminRole?>? _adminSub;
   StreamSubscription<Map<String, int>>? _luckSub;
   Map<String, int> _myLuck = {};
   List<Wish> _remote = [];
@@ -69,6 +69,14 @@ class AppState extends ChangeNotifier {
   /// The notification offer has been shown once; never nag.
   bool pushAsked;
   bool isAdmin = false;
+
+  /// The admin role, meaningful only while [isAdmin]. It starts at the lowest
+  /// privilege and is raised only once the real role is known, so the dashboard
+  /// can never briefly show more than the account is allowed.
+  AdminRole adminRole = AdminRole.moderator;
+
+  /// Whether the signed-in admin may open [area]. False for everyone else.
+  bool canAdmin(AdminArea area) => isAdmin && adminRole.can(area);
 
   /// Remote settings from the admin dashboard. The defaults apply until (or
   /// unless) they load, so an unreachable server never blocks anything.
@@ -136,7 +144,7 @@ class AppState extends ChangeNotifier {
     s._luckDay = s._prefs.getString('luckDay') ?? '';
     s._luckSentToday = s._prefs.getInt('luckSentToday') ?? 0;
     s._rollDay();
-    s.isAdmin = await backend?.checkAdmin() ?? false;
+    s._setAdmin(await backend?.adminRole());
     s.accountLabel = backend?.accountLabel;
     s._listenMyLuck();
     unawaited(s._sync());
@@ -392,11 +400,20 @@ class AppState extends ChangeNotifier {
   /// server rules are what actually protect the data.
   void _listenAdmin() {
     _adminSub?.cancel();
-    _adminSub = _backend?.watchAdmin().listen((admin) {
-      if (admin == isAdmin) return;
-      isAdmin = admin;
-      notifyListeners();
+    _adminSub = _backend?.watchAdmin().listen((role) {
+      if (_setAdmin(role)) notifyListeners();
     }, onError: (Object e) => debugPrint('Admin status feed error: $e'));
+  }
+
+  /// Applies an admin role (null = not an admin). Returns whether anything
+  /// changed, so a repeat of the same value doesn't redraw the app.
+  bool _setAdmin(AdminRole? role) {
+    final nowAdmin = role != null;
+    final newRole = role ?? AdminRole.moderator;
+    if (nowAdmin == isAdmin && newRole == adminRole) return false;
+    isAdmin = nowAdmin;
+    adminRole = newRole;
+    return true;
   }
 
   /// Plus an admin has given this account. It is read from the account's own
@@ -576,7 +593,7 @@ class AppState extends ChangeNotifier {
   /// Returns true when the account is an admin. Throws on a wrong password.
   Future<bool> signInAdmin(String email, String password) async {
     final ok = await _backend?.signInAdmin(email, password) ?? false;
-    isAdmin = ok;
+    _setAdmin(ok ? await _backend?.adminRole() : null);
     accountLabel = _backend?.accountLabel;
     if (ok) {
       _listenMyLuck();
@@ -606,7 +623,7 @@ class AppState extends ChangeNotifier {
     await _backend?.signOut();
     unawaited(_syncDevice());
     unawaited(_refreshPlus());
-    isAdmin = false;
+    _setAdmin(null);
     accountLabel = null;
     if (wasAccount) {
       // These wishes live in the account now. Leaving them here would hand
@@ -626,7 +643,7 @@ class AppState extends ChangeNotifier {
     final ok = await attempt() ?? false;
     if (ok) {
       // The account may be an admin one, and the label changes either way.
-      isAdmin = await _backend?.checkAdmin() ?? false;
+      _setAdmin(await _backend?.adminRole());
       accountLabel = _backend?.accountLabel;
       _listenMyLuck();
       notifyListeners();
@@ -740,7 +757,7 @@ class AppState extends ChangeNotifier {
     _sentIds.clear();
     _myLuck = {};
     _luckSentToday = 0;
-    isAdmin = false;
+    _setAdmin(null);
     accountLabel = null;
     remindersEnabled = false;
     hapticsEnabled = true;

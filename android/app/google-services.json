@@ -1,0 +1,175 @@
+{
+  "project_info": {
+    "project_number": "959593379629",
+    "project_id": "braidstribeapp",
+    "storage_bucket": "braidstribeapp.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:959593379629:android:b1d0989a0fbda20b0fc5a4",
+        "android_client_info": {
+          "package_name": "com.example.braidstribeapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "959593379629-2vhmpo6koemu61kgr06ua4rjc1d61256.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.braidstribeapp",
+            "certificate_hash": "8015fb31126cc592b5ee17ba90229afbadd92408"
+          }
+        },
+        {
+          "client_id": "959593379629-7b6gu1ifsb19f1i1lpn3fv675msfcvbm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.braidstribeapp",
+            "certificate_hash": "f8e22742fe61d51bb00592de4b7ed7230eb80298"
+          }
+        },
+        {
+          "client_id": "959593379629-q28fuoumvb3nut4c8ebo43l2lkh7ecgk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.braidstribeapp",
+            "certificate_hash": "fa98dafd393b14895cdef43832e62cc1a9e8a5e2"
+          }
+        },
+        {
+          "client_id": "959593379629-b14u9i3libsf1eio58mvemfmr12nnbrd.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiLC6-hZTail2DJohetZ-gHkcXySNCB0s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "959593379629-b14u9i3libsf1eio58mvemfmr12nnbrd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "959593379629-0utnp1st2srlbcm1v7okl2oem1vlqi9j.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.tribesofkin.braidstribeapp"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:959593379629:android:a88f88a2481361be0fc5a4",
+        "android_client_info": {
+          "package_name": "com.tribesofkin.braidstribeapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "959593379629-1hfpu3302p2udfcnt1shqko29jcomelu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tribesofkin.braidstribeapp",
+            "certificate_hash": "a02c82152d743af6d4f1cf5ca2dce5930a9f7239"
+          }
+        },
+        {
+          "client_id": "959593379629-2err9ueev9fk8k57kgpoa64h07odea8p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tribesofkin.braidstribeapp",
+            "certificate_hash": "f8e22742fe61d51bb00592de4b7ed7230eb80298"
+          }
+        },
+        {
+          "client_id": "959593379629-3bhnf6lmeo4tris1dp1g5dk5c6i5c0f7.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tribesofkin.braidstribeapp",
+            "certificate_hash": "fa98dafd393b14895cdef43832e62cc1a9e8a5e2"
+          }
+        },
+        {
+          "client_id": "959593379629-gbu82u41v215djqks5l3q6sg64k3pauu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tribesofkin.braidstribeapp",
+            "certificate_hash": "8015fb31126cc592b5ee17ba90229afbadd92408"
+          }
+        },
+        {
+          "client_id": "959593379629-b14u9i3libsf1eio58mvemfmr12nnbrd.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiLC6-hZTail2DJohetZ-gHkcXySNCB0s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "959593379629-b14u9i3libsf1eio58mvemfmr12nnbrd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "959593379629-0utnp1st2srlbcm1v7okl2oem1vlqi9j.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.tribesofkin.braidstribeapp"
+              }
+            }
+          ]
+        }
+      },
+      "admob_app_id": "ca-app-pub-6953316869196839~6257735248"
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:959593379629:android:d846e415dc76547e0fc5a4",
+        "android_client_info": {
+          "package_name": "com.tribesofkin.manifestwell"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "959593379629-b14u9i3libsf1eio58mvemfmr12nnbrd.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiLC6-hZTail2DJohetZ-gHkcXySNCB0s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "959593379629-b14u9i3libsf1eio58mvemfmr12nnbrd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "959593379629-0utnp1st2srlbcm1v7okl2oem1vlqi9j.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.tribesofkin.braidstribeapp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

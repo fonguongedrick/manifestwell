@@ -1,0 +1,17 @@
+{
+  "firestore": [
+    {
+      "database": "manifestwell",
+      "rules": "firestore.rules",
+      "indexes": "firestore.indexes.json"
+    }
+  ],
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "manifestwell",
+      "runtime": "nodejs22",
+      "ignore": ["node_modules", ".git", "test", "*.log"]
+    }
+  ]
+}

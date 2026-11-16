@@ -1,0 +1,6 @@
+node_modules/
+*.log
+
+# Local settings (webhook password): never commit
+.env
+.env.*

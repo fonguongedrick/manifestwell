@@ -1,0 +1,243 @@
+rules_version = '2';
+
+// ManifestWell rules. These belong to the named database `manifestwell` in the
+// braidstribeapp project, never to BraidsTribe's (default) database, and are
+// deployed on their own: firebase deploy --only firestore:manifestwell
+//
+// Members are anonymous Firebase users on purpose. An admin is a user with a
+// document in admins/{uid}, which only the console or the Admin SDK can create.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // An admin can stop a person sharing or sending luck by adding them to
+    // blocked/{uid}. Their wishes stay private to them, as before.
+    function notBlocked() {
+      return !exists(/databases/$(database)/documents/blocked/$(request.auth.uid));
+    }
+
+    // config/app.wishingPaused is the admin's switch for new shared wishes.
+    function wishingOpen() {
+      return !exists(/databases/$(database)/documents/config/app)
+        || get(/databases/$(database)/documents/config/app).data.get('wishingPaused', false) != true;
+    }
+
+    // A user can check whether they themselves are an admin, nothing else.
+    // Admins can also see who the admins are. Nobody can write here from the
+    // app: adding and removing admins goes through the mwAdminAdd and
+    // mwAdminRemove functions (or the Firebase console), which is what lets
+    // the server refuse removing the last admin or an owner.
+    match /admins/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if isAdmin();
+      allow write: if false;
+    }
+
+    // One record per person who has bought (or been given) Plus. The RevenueCat
+    // webhook records purchases; the mwSubGrant function records gifts from an
+    // admin. A person can read their own (that is how their phone learns of a
+    // gift) and admins can read all. Only the server ever writes it.
+    match /subscriptions/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow write: if false;
+    }
+
+    // A signed-in member's private copy of their own wishes, including Daily
+    // Sparks and notes that never go in the shared Well. Guests (anonymous
+    // sessions) have no cloud copy, so they can't use this at all.
+    function memberOnly(uid) {
+      return signedIn()
+        && request.auth.uid == uid
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    match /members/{uid}/wishes/{wishId} {
+      allow read, delete: if memberOnly(uid);
+      allow create, update: if memberOnly(uid)
+        && request.resource.data.keys().hasOnly(
+             ['id', 'text', 'kind', 'category', 'createdAt', 'luck', 'status',
+              'note', 'tag', 'resolvedAt', 'updatedAt', 'steps'])
+        // The small steps: a list, capped so one wish can't grow without limit.
+        && (!('steps' in request.resource.data)
+            || (request.resource.data.steps is list
+                && request.resource.data.steps.size() <= 20))
+        && request.resource.data.id == wishId
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1
+        && request.resource.data.text.size() <= 500
+        && request.resource.data.kind in ['big', 'spark']
+        && request.resource.data.category in
+             ['career', 'love', 'health', 'travel', 'home', 'daily']
+        && request.resource.data.status in
+             ['active', 'closer', 'granted', 'changed', 'doorOpened', 'letGo']
+        && (request.resource.data.note == null
+            || (request.resource.data.note is string
+                && request.resource.data.note.size() <= 1000));
+    }
+
+    // The shared Wishing Well.
+    match /wishes/{wishId} {
+      allow read: if (signedIn() && resource.data.hidden == false)
+                  || (signedIn() && resource.data.authorUid == request.auth.uid)
+                  || isAdmin();
+
+      // Only Big Wishes are shared. Daily Sparks stay private on the device.
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(
+             ['text', 'kind', 'category', 'createdAt', 'luck', 'authorUid', 'hidden'])
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 3
+        && request.resource.data.text.size() <= 280
+        && request.resource.data.kind == 'big'
+        && request.resource.data.category in ['career', 'love', 'health', 'travel', 'home']
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.luck == 0
+        && request.resource.data.hidden == false
+        && notBlocked()
+        && wishingOpen();
+
+      // Sending luck: the counter may rise by one, and only in the same batch
+      // that creates this user's marker, so nobody can send twice.
+      // An admin can hide or restore a wish (only the `hidden` flag).
+      allow update: if (signedIn()
+          && changedKeys().hasOnly(['luck'])
+          && request.resource.data.luck == resource.data.luck + 1
+          && !exists(/databases/$(database)/documents/wishes/$(wishId)/luck/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/wishes/$(wishId)/luck/$(request.auth.uid)))
+        || (changedKeys().hasOnly(['hidden']) && isAdmin());
+
+      allow delete: if (signedIn() && resource.data.authorUid == request.auth.uid)
+                    || isAdmin();
+
+      match /luck/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create: if signedIn() && request.auth.uid == uid && notBlocked();
+        allow update, delete: if false;
+      }
+    }
+
+    // Reports are write-only for members; only an admin can read and clear them.
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['wishId', 'reason', 'reporterUid', 'at'])
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.resource.data.wishId is string
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() <= 200
+        && request.resource.data.at == request.time;
+      allow read, delete: if isAdmin();
+      allow update: if false;
+    }
+
+    // One record per phone that has agreed to push notifications. The document
+    // id is the FCM token, so it can never be listed or guessed by others.
+    // A member can only create, read, change or remove their own devices; a
+    // phone that signs in as someone else re-registers under the new account.
+    // Only the Cloud Functions (which bypass these rules) ever read them to send.
+    // An admin can read them to count reach, never to change them.
+    match /devices/{token} {
+      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || isAdmin();
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create, update: if signedIn()
+        && request.resource.data.keys().hasOnly(
+             ['uid', 'platform', 'timezone', 'luckAlerts', 'revisitNudges', 'updatedAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.platform in ['android', 'ios']
+        && request.resource.data.timezone is string
+        && request.resource.data.timezone.size() <= 64
+        && request.resource.data.luckAlerts is bool
+        && request.resource.data.revisitNudges is bool
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    // ---- Admin dashboard ----------------------------------------------------
+
+    // Remote settings every member reads (pause switch, banner, blocked words)
+    // and only an admin can change.
+    match /config/{doc} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin()
+        && doc == 'app'
+        && request.resource.data.keys().hasOnly(
+             ['wishingPaused', 'banner', 'blockedTerms', 'updatedAt', 'updatedBy'])
+        && request.resource.data.wishingPaused is bool
+        && request.resource.data.banner is string
+        && request.resource.data.banner.size() <= 200
+        && request.resource.data.blockedTerms is list
+        && request.resource.data.blockedTerms.size() <= 100
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // People an admin has stopped from sharing wishes or sending luck.
+    match /blocked/{uid} {
+      allow read, delete: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['reason', 'at', 'by'])
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() <= 200
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.at == request.time;
+    }
+
+    // A push to every phone. An admin queues it; the onAnnouncementCreated
+    // function sends it and records how many phones it reached.
+    match /announcements/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(
+             ['title', 'body', 'audience', 'createdBy', 'createdAt', 'status', 'sent', 'failed'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1
+        && request.resource.data.title.size() <= 60
+        && request.resource.data.body is string
+        && request.resource.data.body.size() >= 1
+        && request.resource.data.body.size() <= 180
+        && request.resource.data.audience in ['all', 'android', 'ios']
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.status == 'queued'
+        && request.resource.data.sent == 0
+        && request.resource.data.failed == 0;
+      allow update, delete: if false;
+    }
+
+    // Append-only record of what admins did. Nobody can edit or delete it.
+    match /adminLog/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['action', 'detail', 'by', 'byLabel', 'at'])
+        && request.resource.data.action is string
+        && request.resource.data.action.size() <= 40
+        && request.resource.data.detail is string
+        && request.resource.data.detail.size() <= 300
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.byLabel is string
+        && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+
+    // Server bookkeeping for push throttling. No client can see or touch it.
+    match /pushState/{id} {
+      allow read, write: if false;
+    }
+    match /userPush/{id} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="launch_ink">#FF0A0919</color>
+    <color name="ic_launcher_background">#0A0919</color>
+    <!-- Tint for the small notification icon (the brand violet). -->
+    <color name="notification_accent">#FFA25CFF</color>
+</resources>

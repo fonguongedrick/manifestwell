@@ -70,6 +70,11 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
+  # Use CocoaPods for iOS plugins. Swift Package Manager cannot resolve
+  # firebase_messaging together with google_sign_in (conflicting gtm-session-fetcher).
+  config:
+    enable-swift-package-manager: false
+
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
